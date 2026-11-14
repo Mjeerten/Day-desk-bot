@@ -153,7 +153,8 @@ def check():
             seen.add(e)
             print(f"  {e:16s} {m.get('instrumentName')!s:40s} {m.get('instrumentType')} bid {m.get('bid')} "
                   f"offer {m.get('offer')} {m.get('marketStatus')}")
-    for e in [EPIC] + sorted(seen - {EPIC})[:4]:
+    yen = os.environ.get("CAPITAL_YEN_EPIC") or "USDJPY"     # yen week (desk/yen_week.py): size must be in dollars
+    for e in [EPIC, yen] + sorted(seen - {EPIC})[:4]:
         try:
             d = c.market(e)
         except RuntimeError as err:

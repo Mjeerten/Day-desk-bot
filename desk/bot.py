@@ -674,7 +674,7 @@ def main():
         if at.enabled:
             stake = stake_for(dt.datetime.now(NY).date(), default=float(os.environ.get("STAKE_EUR") or 1000))[0]
             at.flush(stake)
-            yen_week.run(stake)   # strategy Y: USD/JPY long Mon-Wed, short Thu-Fri on the IG demo (rounds 44 / 44b)
+            yen_week.run(stake)   # strategy Y: USD/JPY long Mon-Wed, short Thu-Fri on the IG + Capital.com demos (rounds 44 / 44b)
             at.report()   # 23:00 Amsterdam: the day's result per demo account
 
 

@@ -127,3 +127,90 @@ def test_report_names_yen(monkeypatch):
     st = {"trades": {}, "yen": {"Y261116L": dict(level=160.08, status="closed")}}
     assert at._name_of(st, 160.08) == "yen week"
     assert at._name_of(st, 25000.0) == "trade"
+
+
+def test_messages_reach_the_phone(ig, monkeypatch):
+    """Opens / closes are sent loud (quiet=False): they were silently logged only before 14 Nov 2026."""
+    sent = []
+    monkeypatch.setattr(at, "notify", lambda title, body, quiet=False, tags=("robot",), prio=3: sent.append((title, quiet, prio)))
+    yw.run(1000, t("2026-11-16 02:16"))
+    assert sent and sent[0][0].startswith("BUY USD/JPY") and sent[0][1] is False and sent[0][2] == 4
+
+
+class FakeCap:
+    book, calls, status = {}, [], "TRADEABLE"
+
+    def __init__(self):
+        pass
+
+    def login(self):
+        return {"accountInfo": {"balance": 1000, "profitLoss": 0}}
+
+    def market(self, epic):
+        assert epic == yw.CAP_EPIC
+        return {"snapshot": {"bid": 155.10, "offer": 155.12, "marketStatus": FakeCap.status, "decimalPlacesFactor": 3},
+                "dealingRules": {"minDealSize": {"value": 100}}, "instrument": {"lotSize": 1, "currency": "JPY"}}
+
+    def positions(self):
+        return [{"market": {"epic": yw.CAP_EPIC}, "position": dict(p)} for p in self.book.values()]
+
+    def open(self, epic, direction, size, level, stop, limit, ref):
+        d = f"C{len(self.calls)}"
+        self.calls.append(("open", direction, size, stop, limit))
+        self.book[d] = {"dealId": d, "size": size, "level": 155.12}
+        return {"dealStatus": "ACCEPTED", "level": 155.12, "dealId": d}
+
+    def close(self, deal_id, direction, size, level, ref):
+        self.calls.append(("close", deal_id))
+        self.book.pop(deal_id)
+        return {"dealStatus": "ACCEPTED", "level": 156.0}
+
+
+@pytest.fixture
+def cap(monkeypatch, tmp_path):
+    import desk.capital
+    FakeCap.book, FakeCap.calls, FakeCap.status = {}, [], "TRADEABLE"
+    monkeypatch.setattr(desk.capital, "Capital", FakeCap)
+    monkeypatch.setattr(at, "CAP_STATE", str(tmp_path / "capital-{mode}.json"))
+    sent = []
+    monkeypatch.setattr(at, "notify", lambda title, body, quiet=False, tags=("robot",), prio=3: sent.append((title, quiet)))
+    for k in ("IG_API_KEY", "IG_USERNAME", "IG_PASSWORD", "IG_ACCOUNT_ID"):
+        monkeypatch.delenv(k, raising=False)                  # IG off: only Capital.com trades
+    for k in ("CAPITAL_API_KEY", "CAPITAL_IDENTIFIER", "CAPITAL_PASSWORD"):
+        monkeypatch.setenv(k, "x")
+    monkeypatch.setenv("CAPITAL_TRADE", "demo")
+    monkeypatch.delenv("YEN_TRADE", raising=False)
+    at.enabled = True
+    FakeCap.sent = sent
+    return FakeCap
+
+
+def test_capital_week(cap):
+    yw.run(1000, t("2026-11-16 02:16"))
+    # dollars: 2 x EUR 1,000 / 0.86 = USD 2,326 -> 2,300 (steps of 100); market order, no stop / target
+    assert cap.calls[0] == ("open", "BUY", 2300, None, None)
+    assert cap.sent[0][0].endswith("| Capital.com demo") and cap.sent[0][1] is False
+    yw.run(1000, t("2026-11-18 16:46"))
+    assert cap.calls[1] == ("close", "C0") and cap.calls[2][:3] == ("open", "SELL", 2300)
+    yw.run(1000, t("2026-11-20 16:46"))
+    assert cap.calls[3] == ("close", "C2") and len(cap.calls) == 4
+    st = at.load("demo", "capital")
+    assert [v["status"] for v in st["yen"].values()] == ["closed", "closed"]
+    assert st["yen"]["Y261116L"]["eur"] == pytest.approx((156.0 / 155.12 - 1) * 2300 * yw.USD_EUR, abs=0.01)
+
+
+def test_capital_dry_is_quiet_and_stray_blocks(cap, monkeypatch):
+    monkeypatch.setenv("CAPITAL_TRADE", "dry")
+    yw.run(1000, t("2026-11-16 02:16"))
+    assert cap.calls == [] and all(q for _, q in cap.sent)    # dry: logged, no phone
+    monkeypatch.setenv("CAPITAL_TRADE", "demo")
+    cap.book["HAND"] = {"dealId": "HAND", "size": 1000, "level": 155.0}   # opened by hand
+    yw.run(1000, t("2026-11-16 03:16"))
+    assert cap.calls == [] and "not opened" in cap.sent[-1][0]
+
+
+def test_size_guard(cap, monkeypatch):
+    real = FakeCap.market
+    monkeypatch.setattr(FakeCap, "market", lambda self, e: dict(real(self, e), dealingRules={"minDealSize": {"value": 100000}}))
+    yw.run(1000, t("2026-11-16 02:16"))                       # a 100,000-dollar minimum is far too big: refused
+    assert cap.calls == [] and "problem" in cap.sent[-1][0]
