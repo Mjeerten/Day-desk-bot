@@ -1,0 +1,83 @@
+name: day bot
+
+# PUBLIC repo (free minutes). Code comes from the private repo Mjeerten/day-trading-desk via tools/publish_bot.sh:
+# edit it there, not here. The journal is read from that private repo with the DESK_DATA_TOKEN secret.
+
+# Noise band + overnight sweep + IBS alerts, Monday dip paper alerts (desk/bot.py). Every 15 minutes on weekdays; the bot itself checks the
+# New York session times, so the UTC hours cover both summer and winter time.
+on:
+  schedule:
+    - cron: "1,16,31,46 13-21 * * 1-5"
+    # Monday dip (paper): hourly from Monday to Wednesday morning, also outside the session (the bot checks the hours)
+    - cron: "16 * * * 1-3"
+    # Sunday from 19:00 Amsterdam: screenshot reminder (sent once; extra hours because GitHub's schedule can be hours late)
+    - cron: "1 17-21 * * 0"
+    # 23:00 Amsterdam daily result (desk/autotrade.report) in winter time (22 UTC); summer time is inside 13-21 above
+    - cron: "1 22 * * 1-5"
+  # GitHub drops most scheduled runs on this repo, so the reliable trigger is an outside timer (cron-job.org)
+  # calling workflow_dispatch with {"ref":"main"} every 15 minutes (BOT.md in the private repo).
+  workflow_dispatch:
+    inputs:
+      test:
+        description: "Only send a test message to the phone (unticked = a normal check now)"
+        type: boolean
+        default: false
+
+permissions:
+  contents: read
+
+concurrency:
+  group: daybot
+  cancel-in-progress: false
+
+jobs:
+  run:
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - uses: actions/checkout@v5
+      - name: private journal (plan, account, IBS missed dates) from Mjeerten/day-trading-desk
+        uses: actions/checkout@v5
+        with:
+          repository: Mjeerten/day-trading-desk
+          token: ${{ secrets.DESK_DATA_TOKEN }}
+          path: private
+          sparse-checkout: journal
+      - run: ln -s private/journal journal
+      - uses: actions/setup-python@v6
+        with:
+          python-version: "3.12"
+      - run: pip install --quiet pandas numpy requests
+      - name: restore sent-message list
+        uses: actions/cache/restore@v4
+        with:
+          path: .daybot
+          key: daybot-${{ github.run_id }}
+          restore-keys: daybot-
+      - name: bot
+        env:
+          NTFY_TOPIC: ${{ secrets.NTFY_TOPIC }}
+          T212_OFFSET: ${{ vars.T212_OFFSET }}
+          # manual-trading messages: variable PHONE_ALERTS = on | off (default off since 8 Nov 2026: only IG demo messages)
+          PHONE_ALERTS: ${{ vars.PHONE_ALERTS || 'off' }}
+          STAKE_EUR: ${{ vars.STAKE_EUR }}
+          # automatic orders on the IG DEMO (desk/autotrade.py): variable AUTO_TRADE = dry (default) | demo | off
+          AUTO_TRADE: ${{ vars.AUTO_TRADE }}
+          IG_API_KEY: ${{ secrets.IG_API_KEY }}
+          IG_USERNAME: ${{ secrets.IG_USERNAME }}
+          IG_PASSWORD: ${{ secrets.IG_PASSWORD }}
+          IG_ACCOUNT_ID: ${{ secrets.IG_ACCOUNT_ID }}
+          # same orders on the Capital.com DEMO (desk/capital.py): variable CAPITAL_TRADE = dry (default) | demo | off
+          CAPITAL_TRADE: ${{ vars.CAPITAL_TRADE }}
+          CAPITAL_EPIC: ${{ vars.CAPITAL_EPIC }}
+          CAPITAL_API_KEY: ${{ secrets.CAPITAL_API_KEY }}
+          CAPITAL_IDENTIFIER: ${{ secrets.CAPITAL_IDENTIFIER }}
+          CAPITAL_PASSWORD: ${{ secrets.CAPITAL_PASSWORD }}
+          CAPITAL_ACCOUNT_ID: ${{ secrets.CAPITAL_ACCOUNT_ID }}
+        run: python -m desk.bot ${{ inputs.test && '--test' || '' }}
+      - name: save sent-message list
+        if: always() && hashFiles('.daybot/sent.json') != ''
+        uses: actions/cache/save@v4
+        with:
+          path: .daybot
+          key: daybot-${{ github.run_id }}

@@ -1,0 +1,46 @@
+name: paper flux
+
+# PUBLIC repo (free minutes). Code comes from the private repo Mjeerten/day-trading-desk via tools/publish_bot.sh:
+# edit it there, not here. The journal is read from that private repo with the DESK_DATA_TOKEN secret.
+
+# Paper tracking of the round-14 Flux reversal model (desk/paper_flux.py): every weekday after the US close, the last
+# 60 days of Yahoo ^NDX 5m candles are replayed and journal/paper_flux.csv is updated (Day Desk logbook, Paper tab).
+# Also the Monday dip (desk/monday_dip.py -> journal/paper_monday.csv): every trade the bot's rule gave, to check
+# the alerts against.
+# 21:20 UTC is after the 16:00 New York close in both summer (20:00 UTC) and winter (21:00 UTC) time.
+on:
+  schedule:
+    - cron: "20 21 * * 1-5"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  run:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v5
+      - name: private journal (plan, account, IBS missed dates) from Mjeerten/day-trading-desk
+        uses: actions/checkout@v5
+        with:
+          repository: Mjeerten/day-trading-desk
+          token: ${{ secrets.DESK_DATA_TOKEN }}
+          path: private
+      - run: ln -s private/journal journal
+      - uses: actions/setup-python@v6
+        with:
+          python-version: "3.12"
+      - run: pip install --quiet pandas numpy requests
+      - run: python -m desk.paper_flux
+      - run: python -m desk.monday_dip
+      - run: python -m desk.session_momentum
+      - run: python -m desk.overnight_bias
+      - name: commit the paper logs to the private repo
+        working-directory: private
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add journal/paper_flux.csv journal/paper_monday.csv journal/paper_momentum.csv journal/paper_obias.csv
+          git commit -m "Paper flux: update after the US close" && git pull --rebase -q && git push || echo "nothing to commit"

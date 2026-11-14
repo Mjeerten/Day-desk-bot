@@ -1,0 +1,42 @@
+name: replay
+
+# PUBLIC repo (free minutes). Code comes from the private repo Mjeerten/day-trading-desk via tools/publish_bot.sh:
+# edit it there, not here. The journal is read from that private repo with the DESK_DATA_TOKEN secret.
+
+# Replays the bot on past days (python -m desk.bot --replay) so the alerts and their times can be matched to the
+# trade journal. Runs on GitHub because Yahoo is not reachable from Claude's container. The log holds the output.
+on:
+  workflow_dispatch:
+    inputs:
+      days:
+        description: "Days to replay, space separated (YYYY-MM-DD), or momentum = today's Session Momentum candles"
+        type: string
+
+permissions:
+  contents: read
+
+jobs:
+  run:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v5
+      - name: private journal (plan, account, IBS missed dates) from Mjeerten/day-trading-desk
+        uses: actions/checkout@v5
+        with:
+          repository: Mjeerten/day-trading-desk
+          token: ${{ secrets.DESK_DATA_TOKEN }}
+          path: private
+          sparse-checkout: journal
+      - run: ln -s private/journal journal
+      - uses: actions/setup-python@v6
+        with:
+          python-version: "3.12"
+      - run: pip install --quiet pandas numpy requests
+      - name: replay
+        run: |
+          if [ "${{ inputs.days }}" = "momentum" ]; then python -m desk.show_momentum; exit 0; fi
+          for d in ${{ inputs.days || '' }} $( [ -z "${{ inputs.days }}" ] && cat journal/replay_days.txt ); do
+            echo "=================== $d"
+            python -m desk.bot --replay "$d" || true
+          done

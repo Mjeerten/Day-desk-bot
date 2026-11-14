@@ -1,0 +1,289 @@
+// Day Desk: Noise band (long only) + Overnight sweep & reclaim + IBS (overnight), Nasdaq-100, 15-minute chart.
+// Backtested in this repo (ORB_BACKTEST.md, rounds 4-5). Paper-trade first.
+// Use on a 15-minute chart of NQ1!, MNQ1! or a Nasdaq-100 CFD (US100 / NAS100). All times are New York time,
+// so daylight-saving changes are handled automatically.
+//@version=5
+indicator("Noise band + Overnight sweep + IBS (NQ)", shorttitle="NB+Sweep+IBS", overlay=true, max_labels_count=500)
+
+tz = "America/New_York"
+lookback  = input.int(14, "Noise band: days to average", minval=5, maxval=30)
+rr        = input.float(2.5, "Sweep: target = x times the risk", step=0.25)
+nbStopPct = input.float(0.3, "Noise band: stop loss % below the buy", step=0.05)
+showNoise = input.bool(true, "Show noise band strategy")
+showSweep = input.bool(true, "Show overnight sweep strategy")
+fomcDates = input.string("2026-10-28 2026-12-09 2027-01-27 2027-03-17 2027-04-28 2027-06-09 2027-07-28 2027-09-15 2027-10-27 2027-12-08 2028-01-26", "Sweep: no trade on these Fed decision days (yyyy-MM-dd)")
+showIbs   = input.bool(true, "Show IBS strategy (buy a weak 15:45 close, hold overnight)")
+ibsMax    = input.float(0.2, "IBS: buy below", step=0.05)
+account   = input.float(1000, "Account (EUR)", minval=1)
+leverage  = input.float(1, "Position per trade = leverage x account", minval=0.1, step=0.5)
+
+// ---------- time ----------
+h        = hour(time, tz)
+m        = minute(time, tz)
+startMin = h * 60 + m
+tfMin    = timeframe.isminutes ? timeframe.multiplier : 0
+is15     = tfMin == 15
+endMin   = startMin + tfMin
+isRTH    = is15 and startMin >= 570 and endMin <= 960     // 9:30-16:00 New York
+firstRTH = is15 and startMin == 570
+lastRTH  = is15 and endMin == 960
+fmt(x) => str.tostring(x, format.mintick)
+isFomc   = str.contains(fomcDates, str.format_time(time, "yyyy-MM-dd", tz))   // round 11: sweep loses on Fed days
+
+// ---------- day levels ----------
+var float dayOpen      = na
+var float prevClose    = na
+var float lastRthClose = na
+// overnight range 18:00-9:30 New York
+inON = startMin >= 1080 or startMin < 570
+var float onH = na
+var float onL = na
+var float swH = na
+var float swL = na
+if inON and not inON[1]
+    onH := high
+    onL := low
+else if inON
+    onH := math.max(onH, high)
+    onL := math.min(onL, low)
+
+// ---------- positions (paper results on this chart) ----------
+var bool  nbIn     = false
+var float nbEntry  = na
+var float nbStopPx = na
+var int   nbTrades = 0
+var int   nbWins   = 0
+var float nbPct    = 0.0
+var int   swPos    = 0
+var float swEntry  = na
+var float swStop   = na
+var float swTgt    = na
+var bool  swDone   = false
+var int   swTrades = 0
+var int   swWins   = 0
+var float swPct    = 0.0
+
+nbBuy = false
+nbStopHit = false
+nbSell = false
+swLong = false
+swShort = false
+swExit = false
+string swWhy = ""
+float swExitPx = na
+
+// a new session while still in a trade (early close day): close at the last close
+if firstRTH
+    if nbIn
+        r = lastRthClose / nbEntry - 1
+        nbPct += r * 100
+        nbWins += r > 0 ? 1 : 0
+        nbIn := false
+    if swPos != 0
+        r = swPos * (lastRthClose / swEntry - 1)
+        swPct += r * 100
+        swWins += r > 0 ? 1 : 0
+        swPos := 0
+    prevClose := lastRthClose
+    dayOpen := open
+    swH := onH
+    swL := onL
+    swDone := false
+
+// ---------- noise band ----------
+var float[] hist = array.new_float(26 * 30, na)
+var int[]   ptr  = array.new_int(26, 0)
+slot = isRTH ? math.floor((startMin - 570) / 15) : -1
+float sigma = na
+if slot >= 0
+    float s = 0.0
+    int n = 0
+    for k = 0 to lookback - 1
+        v = array.get(hist, slot * 30 + k)
+        if not na(v)
+            s += v
+            n += 1
+    sigma := n >= lookback ? s / n : na
+upper = isRTH and not na(prevClose) and not na(sigma) ? math.max(dayOpen, prevClose) * (1 + sigma) : na
+isCheck = isRTH and endMin % 30 == 0 and endMin >= 600   // closes at 10:00, 10:30 ... 16:00
+
+if isRTH and showNoise
+    if nbIn and low <= nbStopPx
+        r = math.min(nbStopPx, open) / nbEntry - 1
+        nbPct += r * 100
+        nbIn := false
+        nbStopHit := true
+    if nbIn and ((isCheck and close < dayOpen) or lastRTH)
+        r = close / nbEntry - 1
+        nbPct += r * 100
+        nbWins += r > 0 ? 1 : 0
+        nbIn := false
+        nbSell := true
+    if not nbIn and not nbStopHit and isCheck and endMin <= 930 and not na(upper) and close > upper
+        nbIn := true
+        nbEntry := close
+        nbStopPx := close * (1 - nbStopPct / 100)
+        nbTrades += 1
+        nbBuy := true
+
+// remember how far price was from the open at this time (for the next days)
+if slot >= 0 and not na(dayOpen)
+    p = array.get(ptr, slot)
+    array.set(hist, slot * 30 + p, math.abs(close / dayOpen - 1))
+    array.set(ptr, slot, (p + 1) % lookback)
+
+// ---------- overnight sweep & reclaim ----------
+if isRTH and showSweep
+    stoppedNow = false
+    if swPos == 1
+        if low <= swStop
+            swExitPx := math.min(swStop, open)
+            swWhy := "STOP hit"
+        else if high >= swTgt
+            swExitPx := math.max(swTgt, open)
+            swWhy := "TARGET hit"
+    else if swPos == -1
+        if high >= swStop
+            swExitPx := math.max(swStop, open)
+            swWhy := "STOP hit"
+        else if low <= swTgt
+            swExitPx := math.min(swTgt, open)
+            swWhy := "TARGET hit"
+    if swPos != 0 and na(swExitPx) and lastRTH
+        swExitPx := close
+        swWhy := "22:00 close"
+    if not na(swExitPx)
+        r = swPos * (swExitPx / swEntry - 1)
+        swPct += r * 100
+        swWins += r > 0 ? 1 : 0
+        swPos := 0
+        swExit := true
+        stoppedNow := true
+    if swPos == 0 and not swDone and not stoppedNow and endMin <= 930 and not na(swH) and not isFomc
+        if low < swL and close > swL
+            swPos := 1
+            swEntry := close
+            swStop := low
+            swTgt := close + rr * (close - low)
+            swLong := true
+        else if high > swH and close < swH
+            swPos := -1
+            swEntry := close
+            swStop := high
+            swTgt := close - rr * (high - close)
+            swShort := true
+        if swPos != 0
+            swDone := true
+            swTrades += 1
+
+if isRTH
+    lastRthClose := close
+
+// ---------- IBS: at the 15:45 New York close, (close - day low) / (day high - day low) below 0.2 = buy, hold
+// overnight; the next 15:45 close sells it unless IBS is again below 0.2. No stop. ----------
+var float dHi = na
+var float dLo = na
+var bool  ibIn = false
+var float ibEntry = na
+var int   ibTrades = 0
+var int   ibWins = 0
+var float ibPct = 0.0
+ibBuy = false
+ibSell = false
+ibKeep = false
+float ibsVal = na
+if firstRTH
+    dHi := high
+    dLo := low
+else if isRTH
+    dHi := math.max(dHi, high)
+    dLo := math.min(dLo, low)
+if showIbs and is15 and endMin == 945 and dHi > dLo
+    ibsVal := (close - dLo) / (dHi - dLo)
+    weak = ibsVal < ibsMax
+    if ibIn and not weak
+        r = close / ibEntry - 1
+        ibPct += r * 100
+        ibWins += r > 0 ? 1 : 0
+        ibIn := false
+        ibSell := true
+    else if ibIn
+        ibKeep := true
+    else if weak
+        ibIn := true
+        ibEntry := close
+        ibTrades += 1
+        ibBuy := true
+
+// ---------- drawing ----------
+posEur = account * leverage
+plot(isRTH ? dayOpen : na, "Today's open", color.new(color.gray, 0), 1, plot.style_linebr)
+plot(showNoise ? upper : na, "Noise line (buy above)", color.new(color.orange, 0), 2, plot.style_steplinebr)
+plot(showSweep and isRTH ? swH : na, "Overnight high", color.new(color.purple, 0), 1, plot.style_linebr)
+plot(showSweep and isRTH ? swL : na, "Overnight low", color.new(color.purple, 0), 1, plot.style_linebr)
+plot(swPos != 0 ? swStop : na, "Sweep stop", color.new(color.red, 0), 2, plot.style_linebr)
+plot(swPos != 0 ? swTgt : na, "Sweep target", color.new(color.green, 0), 2, plot.style_linebr)
+plot(nbIn ? nbStopPx : na, "Noise stop", color.new(color.red, 40), 1, plot.style_linebr)
+bgcolor(nbIn ? color.new(color.green, 90) : na, title="In a noise band trade")
+bgcolor(ibIn and isRTH ? color.new(color.blue, 93) : na, title="In an IBS trade")
+
+if nbBuy
+    label.new(bar_index, low, "NOISE BUY\n" + fmt(close), style=label.style_label_up, color=color.green, textcolor=color.white, size=size.small)
+    alert("NOISE BAND: BUY Nasdaq-100 now at about " + fmt(close) + ", stop-loss " + fmt(nbStopPx) + " (position EUR " + str.tostring(posEur, "#") + "). Sell on the indicator's NOISE SELL, latest at the 16:00 New York close (" + str.format_time(timestamp("America/New_York", year(time, "America/New_York"), month(time, "America/New_York"), dayofmonth(time, "America/New_York"), 16, 0), "HH:mm", "Europe/Amsterdam") + " Amsterdam).", alert.freq_once_per_bar_close)
+if nbSell
+    label.new(bar_index, high, "NOISE SELL\n" + fmt(close), style=label.style_label_down, color=color.teal, textcolor=color.white, size=size.small)
+    alert("NOISE BAND: SELL (close the long) now at about " + fmt(close), alert.freq_once_per_bar_close)
+if nbStopHit
+    label.new(bar_index, high, "NOISE STOP\n" + fmt(nbStopPx), style=label.style_label_down, color=color.gray, textcolor=color.white, size=size.tiny)
+if swLong
+    label.new(bar_index, low, "SWEEP BUY " + fmt(close) + "\nstop " + fmt(swStop) + "\ntarget " + fmt(swTgt), style=label.style_label_up, color=color.blue, textcolor=color.white, size=size.small)
+    alert("SWEEP: BUY now at about " + fmt(close) + ", stop-loss " + fmt(swStop) + ", take-profit " + fmt(swTgt), alert.freq_once_per_bar_close)
+if swShort
+    label.new(bar_index, high, "SWEEP SHORT " + fmt(close) + "\nstop " + fmt(swStop) + "\ntarget " + fmt(swTgt), style=label.style_label_down, color=color.fuchsia, textcolor=color.white, size=size.small)
+    alert("SWEEP: SELL SHORT now at about " + fmt(close) + ", stop-loss " + fmt(swStop) + ", take-profit " + fmt(swTgt), alert.freq_once_per_bar_close)
+if swExit
+    label.new(bar_index, swWhy == "STOP hit" ? high : low, "SWEEP " + swWhy + "\n" + fmt(swExitPx), style=swWhy == "STOP hit" ? label.style_label_down : label.style_label_up, color=color.gray, textcolor=color.white, size=size.tiny)
+    if swWhy == "22:00 close"
+        alert("SWEEP: close the trade now (end of day) at about " + fmt(swExitPx), alert.freq_once_per_bar_close)
+
+if ibBuy
+    label.new(bar_index, low, "IBS BUY\n" + fmt(close) + "\nIBS " + str.tostring(ibsVal, "#.##"), style=label.style_label_up, color=color.navy, textcolor=color.white, size=size.small)
+    alert("IBS: BUY Nasdaq-100 now at about " + fmt(close) + " (close near the day's low). No stop, hold overnight; the next 15:45 New York close decides sell or keep.", alert.freq_once_per_bar_close)
+if ibSell
+    label.new(bar_index, high, "IBS SELL\n" + fmt(close), style=label.style_label_down, color=color.navy, textcolor=color.white, size=size.small)
+    alert("IBS: SELL (close the overnight trade) now at about " + fmt(close), alert.freq_once_per_bar_close)
+if ibKeep
+    label.new(bar_index, low, "IBS keep", style=label.style_label_up, color=color.gray, textcolor=color.white, size=size.tiny)
+
+alertcondition(nbBuy, "Noise band BUY", "Noise band: BUY Nasdaq-100 at this candle close")
+alertcondition(nbSell, "Noise band SELL", "Noise band: SELL (close the long) at this candle close")
+alertcondition(swLong, "Sweep BUY", "Overnight sweep: BUY, stop at the candle low, target 2.5x the risk")
+alertcondition(swShort, "Sweep SHORT", "Overnight sweep: SELL SHORT, stop at the candle high, target 2.5x the risk")
+alertcondition(ibBuy, "IBS BUY", "IBS: BUY at the 15:45 New York close, no stop, hold overnight")
+alertcondition(ibSell, "IBS SELL", "IBS: SELL (close the overnight trade) at the 15:45 New York close")
+
+// ---------- 'what to do now' box ----------
+var table tb = table.new(position.top_right, 2, 9, border_width=1)
+if barstate.islast
+    bg = color.new(color.black, 20)
+    table.cell(tb, 0, 0, is15 ? "NB + Sweep + IBS" : "Switch the chart to 15 minutes!", text_color=color.white, bgcolor=is15 ? bg : color.red)
+    table.cell(tb, 1, 0, "Position per trade: EUR " + str.tostring(posEur, "#"), text_color=color.white, bgcolor=bg)
+    nbNow = nbIn ? "IN LONG since " + fmt(nbEntry) + "  stop " + fmt(nbStopPx) + "\nsell if a :00/:30 close < " + fmt(dayOpen) : (na(upper) ? "flat - waiting for the US open (first check 10:00 New York, " + str.format_time(timestamp("America/New_York", year(time, "America/New_York"), month(time, "America/New_York"), dayofmonth(time, "America/New_York"), 10, 0), "HH:mm", "Europe/Amsterdam") + " Amsterdam)" : "flat - buy if a :00/:30 close > " + fmt(upper))
+    swNow = swPos == 1 ? "IN LONG " + fmt(swEntry) + "  stop " + fmt(swStop) + "  target " + fmt(swTgt) : swPos == -1 ? "IN SHORT " + fmt(swEntry) + "  stop " + fmt(swStop) + "  target " + fmt(swTgt) : inON ? "overnight range so far: high " + fmt(onH) + " / low " + fmt(onL) + " (final at 15:30)" : swDone ? "done for today" : isRTH ? "flat - watch overnight high " + fmt(swH) + " / low " + fmt(swL) : "flat - market closed"
+    table.cell(tb, 0, 1, "Noise band", text_color=color.orange, bgcolor=bg)
+    table.cell(tb, 1, 1, nbNow, text_color=color.white, bgcolor=bg, text_halign=text.align_left)
+    table.cell(tb, 0, 2, "Sweep", text_color=color.rgb(200, 150, 255), bgcolor=bg)
+    table.cell(tb, 1, 2, swNow, text_color=color.white, bgcolor=bg, text_halign=text.align_left)
+    ibNow = ibIn ? "IN LONG since " + fmt(ibEntry) + " - sell or keep at the 15:45 New York close (" + str.format_time(timestamp("America/New_York", year(time, "America/New_York"), month(time, "America/New_York"), dayofmonth(time, "America/New_York"), 15, 45), "HH:mm", "Europe/Amsterdam") + " Amsterdam)" : "flat - buy if the 15:45 New York close is in the bottom " + str.tostring(ibsMax * 100, "#") + "% of the day's range"
+    table.cell(tb, 0, 7, "IBS", text_color=color.rgb(120, 170, 255), bgcolor=bg)
+    table.cell(tb, 1, 7, ibNow, text_color=color.white, bgcolor=bg, text_halign=text.align_left)
+    table.cell(tb, 0, 8, "IBS history", text_color=color.rgb(120, 170, 255), bgcolor=bg)
+    table.cell(tb, 1, 8, str.tostring(ibTrades) + " / " + str.tostring(ibTrades > 0 ? 100.0 * ibWins / ibTrades : 0, "#") + "% / " + str.tostring(ibPct, "#.##") + "%", text_color=color.white, bgcolor=bg)
+    table.cell(tb, 0, 3, "Chart history", text_color=color.silver, bgcolor=bg)
+    table.cell(tb, 1, 3, "trades / win % / sum of % (no costs)", text_color=color.silver, bgcolor=bg)
+    table.cell(tb, 0, 4, "Noise band", text_color=color.orange, bgcolor=bg)
+    table.cell(tb, 1, 4, str.tostring(nbTrades) + " / " + str.tostring(nbTrades > 0 ? 100.0 * nbWins / nbTrades : 0, "#") + "% / " + str.tostring(nbPct, "#.##") + "%", text_color=color.white, bgcolor=bg)
+    table.cell(tb, 0, 5, "Sweep", text_color=color.rgb(200, 150, 255), bgcolor=bg)
+    table.cell(tb, 1, 5, str.tostring(swTrades) + " / " + str.tostring(swTrades > 0 ? 100.0 * swWins / swTrades : 0, "#") + "% / " + str.tostring(swPct, "#.##") + "%", text_color=color.white, bgcolor=bg)
+    table.cell(tb, 0, 6, "EUR result", text_color=color.silver, bgcolor=bg)
+    table.cell(tb, 1, 6, "about EUR " + str.tostring((nbPct + swPct + ibPct) / 100 * posEur, "#") + " at EUR " + str.tostring(posEur, "#") + " per trade", text_color=color.white, bgcolor=bg)

@@ -1,0 +1,5 @@
+journal
+private/
+.daybot/
+__pycache__/
+.pytest_cache/
