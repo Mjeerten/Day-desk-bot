@@ -19,6 +19,8 @@ Brokers (BROKERS): 'ig' (desk/ig.py, switch AUTO_TRADE) and 'capital' (desk/capi
 off | dry | demo; its dry run only logs, no phone messages). Each has its own state file; both get the same signals.
 Capital.com takes market orders (no limit price) and makes its own deal references, so a position there that is not in
 our state file blocks new orders that run (never a second position after a lost state file).
+'ctrader' (desk/ctrader.py, switch CTRADER_TRADE, FTMO account): stake = CTRADER_SIZE (0.33, round 46) x the account's
+starting balance, new trades stop at 3 % below the day's start (FTMO's daily limit is 5 %).
 """
 from __future__ import annotations
 
@@ -45,8 +47,13 @@ BROKERS = {
     "capital": dict(label="Capital.com demo", module="desk.capital", cls="Capital", mode_env="CAPITAL_TRADE",
                     demo_host="demo-api-capital.backend-capital.com",
                     secrets=("CAPITAL_API_KEY", "CAPITAL_IDENTIFIER", "CAPITAL_PASSWORD")),
+    "ctrader": dict(label="FTMO", module="desk.ctrader", cls="FTMO", mode_env="CTRADER_TRADE",
+                    demo_host="FTMO or demo accounts only", day_loss=0.03,
+                    stake_x=float(os.environ.get("CTRADER_SIZE") or 0.33),    # round 46: 0.33x the desk
+                    secrets=("CTRADER_CLIENT_ID", "CTRADER_CLIENT_SECRET", "CTRADER_ACCESS_TOKEN")),
 }
 CAP_STATE = os.environ.get("CAPITAL_STATE") or ".daybot/capital-{mode}.json"
+CT_STATE = os.environ.get("CTRADER_STATE") or ".daybot/ctrader-{mode}.json"
 
 _wants: dict[str, tuple[list[dict], float | None]] = {}
 enabled = False                       # bot.main sets it for live runs
@@ -68,7 +75,7 @@ def want(strat, wants, scale_px=None):
 
 
 def _state(m, broker):
-    return (STATE if broker == "ig" else CAP_STATE).format(mode=m)
+    return {"ig": STATE, "capital": CAP_STATE}.get(broker, CT_STATE).format(mode=m)
 
 
 def load(m, broker="ig"):
@@ -143,7 +150,7 @@ def flush(stake, now=None):
                 if retry_elsewhere(err, broker):
                     continue
                 notify(f"{b['label']}: problem", f"Automatic orders skipped this run: {err!r}"[:400],
-                       quiet=(broker == "capital" and m == "dry"))   # a Capital.com dry run never buzzes the phone
+                       quiet=(broker != "ig" and m == "dry"))   # a Capital.com / FTMO dry run never buzzes the phone
     finally:
         _wants.clear()
 
@@ -176,7 +183,10 @@ def _flush(m, stake, now, broker="ig"):
     bal = float(sess.get("accountInfo", {}).get("balance") or 0) + float(sess.get("accountInfo", {}).get("profitLoss") or 0)
     today = f"{now:%y%m%d}"
     st["day"].setdefault(today, bal)
-    loss_stop = bal < st["day"][today] * (1 - DAY_LOSS)
+    loss_stop = bal < st["day"][today] * (1 - B.get("day_loss", DAY_LOSS))
+    if "stake_x" in B:                     # prop account: a share of its starting balance, not the plan's stake
+        st.setdefault("start_balance", bal)
+        stake = B["stake_x"] * st["start_balance"]
     known = {t.get("deal") for t in st["trades"].values()}
     stray = [d for d in pos if d not in known] if broker != "ig" else []
     if stray:
