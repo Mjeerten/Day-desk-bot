@@ -114,6 +114,19 @@ def size_for(stake, price, step):
     return round(max(s, step), 4)
 
 
+def retry_elsewhere(err, broker="ig"):
+    """IG's firewall blocked this GitHub server (ig.Blocked). In the first job of a workflow run, ask daybot.yml to run
+    the bot again on a fresh server (job 'retry') and stay quiet; returns True then. In the retry job (IG_RETRY_JOB=1)
+    or outside GitHub it returns False, so the caller sends the 'problem' message as before."""
+    out = os.environ.get("GITHUB_OUTPUT")
+    if broker != "ig" or type(err).__name__ != "Blocked" or os.environ.get("IG_RETRY_JOB") or not out:
+        return False
+    with open(out, "a") as f:
+        f.write("ig_blocked=true\n")
+    print(f"[ig] {err}; no message yet, the workflow retries on another GitHub server")
+    return True
+
+
 def flush(stake, now=None):
     """Reconcile with each broker. Never raises: a broker problem must not stop the alerts (they already went out)."""
     if not enabled or not _wants:
@@ -127,6 +140,8 @@ def flush(stake, now=None):
             try:
                 _flush(m, stake, now or pd.Timestamp.now(tz="America/New_York"), broker)
             except Exception as err:  # noqa
+                if retry_elsewhere(err, broker):
+                    continue
                 notify(f"{b['label']}: problem", f"Automatic orders skipped this run: {err!r}"[:400],
                        quiet=(broker == "capital" and m == "dry"))   # a Capital.com dry run never buzzes the phone
     finally:

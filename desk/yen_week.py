@@ -78,6 +78,8 @@ def run(stake, now=None):
         try:
             _run(m, stake, now, broker)
         except Exception as err:  # noqa
+            if at.retry_elsewhere(err, broker):
+                continue
             at.notify(f"{at.BROKERS[broker]['label']}: yen week problem", f"Yen week orders skipped this run: {err!r}"[:400],
                       quiet=(broker == "capital" and m == "dry"))
 

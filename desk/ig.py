@@ -22,6 +22,11 @@ SEARCH = "US Tech 100"
 EPIC_GUESS = "IX.D.NASDAQ.IFE.IP"                 # US Tech 100 Cash (EUR 1); confirmed by --check
 
 
+class Blocked(RuntimeError):
+    """IG's website firewall answered with its HTML deny page (HTTP 403): this GitHub server's address is blocked, not
+    the account. The workflow then runs the bot once more on a fresh server (daybot.yml, job 'retry')."""
+
+
 class IG:
     def __init__(self, key=None, user=None, password=None, account=None):
         self.key = key or os.environ["IG_API_KEY"].strip()
@@ -31,7 +36,7 @@ class IG:
         self.h = {"X-IG-API-KEY": self.key, "Accept": "application/json; charset=UTF-8",
                   "Content-Type": "application/json; charset=UTF-8"}
 
-    RETRY_WAITS = (10, 30)   # seconds; IG's website firewall now and then blocks one request from a GitHub server
+    RETRY_WAITS = (10,)   # seconds; IG's firewall blocks some GitHub servers: one quick retry, then a fresh server
 
     def req(self, method, path, version=1, body=None, extra=None):
         h = dict(self.h, Version=str(version), **(extra or {}))
@@ -44,8 +49,8 @@ class IG:
             print(f"[ig] {method} {path}: blocked by IG's firewall (HTTP 403 page), retrying in {wait}s")
             time.sleep(wait)
         if blocked:
-            raise RuntimeError(f"IG {method} {path}: blocked by IG's firewall (HTTP 403 deny page) "
-                               f"{1 + len(self.RETRY_WAITS)} times; the next run tries again")
+            raise Blocked(f"IG {method} {path}: blocked by IG's firewall (HTTP 403 deny page) "
+                          f"{1 + len(self.RETRY_WAITS)} times from this GitHub server")
         if r.status_code >= 400:
             raise RuntimeError(f"IG {method} {path}: HTTP {r.status_code} {r.text[:300]}")
         return r
