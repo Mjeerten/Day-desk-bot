@@ -31,10 +31,21 @@ class IG:
         self.h = {"X-IG-API-KEY": self.key, "Accept": "application/json; charset=UTF-8",
                   "Content-Type": "application/json; charset=UTF-8"}
 
+    RETRY_WAITS = (10, 30)   # seconds; IG's website firewall now and then blocks one request from a GitHub server
+
     def req(self, method, path, version=1, body=None, extra=None):
         h = dict(self.h, Version=str(version), **(extra or {}))
-        r = requests.request(method, BASE + path, headers=h, data=json.dumps(body) if body is not None else None,
-                             timeout=30)
+        for wait in self.RETRY_WAITS + (None,):
+            r = requests.request(method, BASE + path, headers=h, data=json.dumps(body) if body is not None else None,
+                                 timeout=30)
+            blocked = r.status_code == 403 and "<html" in r.text[:300].lower()   # firewall deny page, not an API error
+            if not blocked or wait is None:
+                break
+            print(f"[ig] {method} {path}: blocked by IG's firewall (HTTP 403 page), retrying in {wait}s")
+            time.sleep(wait)
+        if blocked:
+            raise RuntimeError(f"IG {method} {path}: blocked by IG's firewall (HTTP 403 deny page) "
+                               f"{1 + len(self.RETRY_WAITS)} times; the next run tries again")
         if r.status_code >= 400:
             raise RuntimeError(f"IG {method} {path}: HTTP {r.status_code} {r.text[:300]}")
         return r
