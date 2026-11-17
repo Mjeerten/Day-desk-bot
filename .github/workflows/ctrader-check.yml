@@ -1,0 +1,28 @@
+name: ctrader check
+
+# PUBLIC repo (free minutes). Code comes from the private repo Mjeerten/day-trading-desk via tools/publish_bot.sh.
+# Read-only check of the cTrader Open API connection (desk/ctrader.py --check): app login, accounts, Nasdaq / USD/JPY
+# contracts and their size rules. No orders. Account numbers are masked in the log (public).
+on:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  check:
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - uses: actions/checkout@v5
+      - uses: actions/setup-python@v6
+        with:
+          python-version: "3.12"
+      - run: pip install --quiet websocket-client
+      - name: check
+        env:
+          CTRADER_CLIENT_ID: ${{ secrets.CTRADER_CLIENT_ID }}
+          CTRADER_CLIENT_SECRET: ${{ secrets.CTRADER_CLIENT_SECRET }}
+          CTRADER_ACCESS_TOKEN: ${{ secrets.CTRADER_ACCESS_TOKEN }}
+          CTRADER_REFRESH_TOKEN: ${{ secrets.CTRADER_REFRESH_TOKEN }}
+        run: python -m desk.ctrader --check
