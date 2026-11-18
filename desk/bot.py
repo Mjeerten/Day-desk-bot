@@ -581,10 +581,13 @@ def send_momentum(now, day, topic, live, fallback):
             return None
         st = sm.manage(nq5, dec, day, now)
         msgs = sm.messages(dec, st, day, stake)
+        # the broker orders need 'where is the futures price NOW': Yahoo's NQ=F runs ~10 min late, which put the demo
+        # stops ~140 points off after a fast move (18 Nov 2026); ^NDX is near real time, so use it + the basis
         nqc = complete(nq1, 1, now)
+        scale = float(ndx1.close.iloc[-1]) + gap if len(ndx1) and np.isfinite(gap) else \
+            (float(nqc.close.iloc[-1]) if len(nqc) else None)
         at.want("P", [dict(ref=at.ref_of("P", dec["t_in"]), side=dec["side"], entry=dec["entry"], t_in=dec["t_in"],
-                           stop=st["stop"], target=None)] if st["why"] == "open" else [],
-                float(nqc.close.iloc[-1]) if len(nqc) else None)
+                           stop=st["stop"], target=None)] if st["why"] == "open" else [], scale)
     except Exception as err:  # noqa: Yahoo hiccup etc.; the next run tries again
         print(f"Session momentum not checked ({err!r})")
         return None
