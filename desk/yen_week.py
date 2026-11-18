@@ -1,5 +1,5 @@
 """Yen week (strategy Y, rounds 44 / 44b): USD/JPY long Monday to Wednesday, short Thursday and Friday, on the IG DEMO
-and the Capital.com DEMO (each its own switch, state and messages; 14 Nov 2026).
+the Capital.com DEMO (14 Nov 2026) and the FTMO account via cTrader (18 Nov 2026), each its own switch, state and messages.
 
 Rule (New York time):
   - Monday 02:00: buy USD/JPY (the hourly Monday-dip bot run at :16 does it, 08:16 Amsterdam)
@@ -10,9 +10,10 @@ Rule (New York time):
   Fed-week / volatility filters do not beat it on both periods; only the size changes (2x, the owner).
 A missed run: the next run does it, if the buy is at most LATE_H hours late (the short too); a close is never too late.
 Size: LEV x the plan's stake (desk/plan.py) worth of dollars, at least the broker's minimum (IG trades its minimum 0.2 and
-records 'scale' like the Nasdaq trades; Capital.com sizes in dollars, so it trades the full 2x). IG orders: fill-or-kill
+records 'scale' like the Nasdaq trades; Capital.com and cTrader size in dollars, so they trade the full 2x; FTMO's stake = CTRADER_SIZE x its start balance
+like its Nasdaq orders). IG orders: fill-or-kill
 limit SLIP_PCT through the quote, like desk/autotrade.py; Capital.com: market orders (no fill-or-kill there).
-Switches: AUTO_TRADE (IG) / CAPITAL_TRADE (Capital.com), off | dry | demo as the Nasdaq orders, and YEN_TRADE=off to stop
+Switches: AUTO_TRADE (IG) / CAPITAL_TRADE (Capital.com) / CTRADER_TRADE (FTMO), off | dry | demo as the Nasdaq orders, and YEN_TRADE=off to stop
 only this strategy on both. A Capital.com dry run logs only (no phone messages), like its Nasdaq orders.
 State: key 'yen' in each broker's state file (.daybot/ig-<mode>.json, .daybot/capital-<mode>.json), so the 23:00 report sees it.
 Capital.com: a USD/JPY position there that is not in our state blocks a new order (no deal reference to match on).
@@ -30,7 +31,8 @@ from desk import autotrade as at
 NY = "America/New_York"
 EPIC = os.environ.get("YEN_EPIC") or "CS.D.USDJPY.MINI.IP"
 CAP_EPIC = os.environ.get("CAPITAL_YEN_EPIC") or "USDJPY"   # Capital.com: price in yen, size in dollars (check with --check)
-BROKERS = ("ig", "capital")
+CT_EPIC = os.environ.get("CTRADER_YEN_EPIC") or "USDJPY"    # FTMO / cTrader: volume in cents of a dollar, size = dollars
+BROKERS = ("ig", "capital", "ctrader")
 BUY_AT = (0, dt.time(2, 0))       # Monday 02:00 NY
 FLIP_AT = (2, dt.time(16, 45))    # Wednesday 16:45 NY
 OUT_AT = (4, dt.time(16, 45))     # Friday 16:45 NY
@@ -81,7 +83,7 @@ def run(stake, now=None):
             if at.retry_elsewhere(err, broker):
                 continue
             at.notify(f"{at.BROKERS[broker]['label']}: yen week problem", f"Yen week orders skipped this run: {err!r}"[:400],
-                      quiet=(broker == "capital" and m == "dry"))
+                      quiet=(broker != "ig" and m == "dry"))
 
 
 def _run(m, stake, now, broker="ig"):
@@ -105,11 +107,14 @@ def _run(m, stake, now, broker="ig"):
     if B["demo_host"] not in mod.BASE:
         raise RuntimeError("not the demo server: refusing to trade")
     is_ig = broker == "ig"
-    epic, lab = (EPIC if is_ig else CAP_EPIC), B["label"]
+    epic, lab = {"ig": EPIC, "capital": CAP_EPIC}.get(broker, CT_EPIC), B["label"]
     quiet = not is_ig and m == "dry"
     dry = " (dry run)" if m == "dry" else ""
     ig = getattr(mod, B["cls"])()
-    ig.login()
+    sess = ig.login()
+    if "stake_x" in B:                   # prop account (FTMO): a share of its start balance, as its Nasdaq orders
+        info = sess.get("accountInfo", {})
+        stake = B["stake_x"] * st.setdefault("start_balance", float(info.get("balance") or 0) + float(info.get("profitLoss") or 0))
     mk = ig.market(epic)
     snap, rules, ins = mk["snapshot"], mk["dealingRules"], mk.get("instrument", {})
     bid, offer = float(snap["bid"]), float(snap["offer"])
@@ -119,7 +124,7 @@ def _run(m, stake, now, broker="ig"):
     dec = int(snap.get("decimalPlacesFactor") or 3)
     cur = next((c["code"] for c in ins.get("currencies", []) if c.get("isDefault")), None) or \
         (ins.get("currencies") or [{"code": "JPY"}])[0]["code"]
-    contract = float(ins.get("contractSize") or 10000) if is_ig else 1.0   # Capital.com: size = dollars
+    contract = float(ins.get("contractSize") or 10000) if is_ig else 1.0   # Capital.com / cTrader: size = dollars
     step = float(rules["minDealSize"]["value"])
     pos = {p["position"]["dealId"]: p for p in ig.positions() if p["market"].get("epic") == epic}
     on_ig = {str(p["position"].get("dealReference") or "").split("-")[0] for p in pos.values()}

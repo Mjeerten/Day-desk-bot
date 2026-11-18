@@ -130,3 +130,49 @@ def test_autotrade_ctrader_dry_sizes_off_the_start_balance(env, tmp_path):
     assert st["start_balance"] == pytest.approx(9974.5)
     assert t["status"] == "open" and t["size"] == 0.12 and t["deal"] is None
     assert t["stop"] == pytest.approx(24925.0 + 27142.8 - 25010.0, abs=0.1)
+
+
+class YenWS(FakeWS):
+    """USD/JPY on FTMO: 3 digits, minimum and step 1,000 dollars (volume in cents)."""
+
+    def send(self, raw):
+        m = json.loads(raw)
+        pt, mid = m["payloadType"], m["clientMsgId"]
+        r = lambda t, pl: self.out.append(json.dumps({"clientMsgId": mid, "payloadType": t, "payload": pl}))
+        if pt == PT["symbol_by_id"]:
+            self.sent.append(m)
+            return r(PT["symbol_by_id_res"], {"symbol": [{"symbolId": 4, "digits": 3, "minVolume": 100000,
+                                                          "stepVolume": 100000, "slDistance": 0, "distanceSetIn": 1}]})
+        if pt == PT["sub_spots"]:
+            self.sent.append(m)
+            r(PT["sub_spots_res"], {})
+            return self.out.append(json.dumps({"payloadType": PT["spot"], "payload": {"symbolId": 4, "bid": 15510000,
+                                                                                      "ask": 15512000}}))
+        if pt == PT["new_order"]:
+            self.sent.append(m)
+            r(PT["execution"], {"executionType": 3, "deal": {"executionPrice": 155.12},
+                                "position": {"positionId": 88, "price": 155.12}})
+            self.pos = [{"positionId": 88, "price": 155.12, "tradeData": {"symbolId": 4, "volume": m["payload"]["volume"],
+                                                                          "tradeSide": 1, "label": m["payload"]["label"]}}]
+            return
+        return super().send(raw)
+
+
+def test_yen_week_on_ftmo(env, tmp_path):
+    from desk import yen_week as yw
+    ws = YenWS(accounts=[{"ctidTraderAccountId": 9592, "isLive": True, "brokerTitleShort": "FTMO Platform"}])
+    env.setattr(ctrader.websocket, "create_connection", lambda url, timeout=20: ws)
+    env.setattr(autotrade, "CT_STATE", str(tmp_path / "ct-{mode}.json"))
+    sent = []
+    env.setattr(autotrade, "notify", lambda title, body, quiet=False, tags=(), prio=3: sent.append(title))
+    for k in ("IG_API_KEY", "CAPITAL_API_KEY"):
+        env.delenv(k, raising=False)
+    env.setenv("CTRADER_TRADE", "demo")
+    env.delenv("YEN_TRADE", raising=False)
+    yw.run(1000, pd.Timestamp("2026-11-16 02:16", tz="America/New_York"))
+    o = [m for m in ws.sent if m["payloadType"] == PT["new_order"]][0]["payload"]
+    # 2 x (0.33 x 9,974.50 start balance) / 0.86 = USD 7,655 -> 8,000 (steps of 1,000); volume in cents; no stop
+    assert o["symbolId"] == 4 and o["tradeSide"] == 1 and o["volume"] == 800000 and "relativeStopLoss" not in o
+    assert o["label"] == "Y261116L" and sent[0].startswith("BUY USD/JPY") and sent[0].endswith("| FTMO")
+    st = autotrade.load("demo", "ctrader")
+    assert st["yen"]["Y261116L"]["status"] == "open" and st["yen"]["Y261116L"]["size"] == 8000
