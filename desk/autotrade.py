@@ -208,6 +208,27 @@ def _flush(m, stake, now, broker="ig"):
                 f"{'Buy' if t['side'] == 1 else 'Short'} from {num(t['level'])} closed by {lab} at its {why.split()[0]} "
                 f"(~{num(hit)}). Exact amount: IG history.\n{ref}",
                 ("white_check_mark",) if eur >= 0 else ("x",), 4)
+    def close_trade(ref, t, p, what):
+        """Close one open trade at the market; False if the broker refused (tries again next run)."""
+        lvl = bid - SLIP if t["side"] == 1 else offer + SLIP
+        if m == "demo":
+            c = ig.close(t["deal"], "SELL" if t["side"] == 1 else "BUY", float(p["position"]["size"]), lvl, ref + "x")
+            if c.get("dealStatus") != "ACCEPTED":
+                say(f"{lab}: close refused", f"{ref}: {c.get('reason')}; tries again next run")
+                return False
+            exit_ = float(c.get("level") or (bid if t["side"] == 1 else offer))
+        else:
+            exit_ = bid if t["side"] == 1 else offer
+        pts = t["side"] * (exit_ - t["level"])
+        t.update(status="closed", exit=exit_, closed=str(now), pts=round(pts, 1), eur=round(pts * t["size"], 2))
+        eur = pts * t["size"]
+        say(f"{money(eur)} | {NAMES[t['strat']]} {what} | {lab}{dry}",
+            f"Result {money(eur)} ({pts:+.1f} points).\n"
+            f"{'Sold' if t['side'] == 1 else 'Bought back'} {t['size']} at {num(exit_)} "
+            f"({'bought' if t['side'] == 1 else 'shorted'} at {num(t['level'])}), {lab}.\n{ref}",
+            ("white_check_mark",) if eur >= 0 else ("x",), 4)
+        return True
+
     for strat, (wants, scale_px) in _wants.items():
         shift = (mid - scale_px) if scale_px else None
         wanted = {w["ref"]: w for w in wants}
@@ -221,23 +242,7 @@ def _flush(m, stake, now, broker="ig"):
             if not tradeable:
                 print(f"[{broker}] {ref}: should close, market {snap.get('marketStatus')}; next run")
                 continue
-            lvl = bid - SLIP if t["side"] == 1 else offer + SLIP
-            if m == "demo":
-                c = ig.close(t["deal"], "SELL" if t["side"] == 1 else "BUY", float(p["position"]["size"]), lvl, ref + "x")
-                if c.get("dealStatus") != "ACCEPTED":
-                    say(f"{lab}: close refused", f"{ref}: {c.get('reason')}; tries again next run")
-                    continue
-                exit_ = float(c.get("level") or (bid if t["side"] == 1 else offer))
-            else:
-                exit_ = bid if t["side"] == 1 else offer
-            pts = t["side"] * (exit_ - t["level"])
-            t.update(status="closed", exit=exit_, closed=str(now), pts=round(pts, 1), eur=round(pts * t["size"], 2))
-            eur = pts * t["size"]
-            say(f"{money(eur)} | {NAMES[strat]} CLOSED | {lab}{dry}",
-                f"Result {money(eur)} ({pts:+.1f} points).\n"
-                f"{'Sold' if t['side'] == 1 else 'Bought back'} {t['size']} at {num(exit_)} "
-                f"({'bought' if t['side'] == 1 else 'shorted'} at {num(t['level'])}), {lab}.\n{ref}",
-                ("white_check_mark",) if eur >= 0 else ("x",), 4)
+            close_trade(ref, t, p, "CLOSED")
         # open new trades / move stops
         for ref, w in wanted.items():
             t = st["trades"].get(ref)
@@ -246,8 +251,18 @@ def _flush(m, stake, now, broker="ig"):
                     new = round(w["stop"] + t.get("shift", shift), 1)
                     p = pos[t["deal"]]["position"]
                     old = float(p.get("stopLevel") or 0)
-                    if old and w["side"] * (new - old) >= 1 and abs(mid - new) >= min_dist:
-                        ig.update_stop(t["deal"], new, p.get("limitLevel"))
+                    if old and w["side"] * (new - old) >= 1:
+                        if w["side"] * (mid - new) < min_dist:
+                            # the trailed stop is already at / past this broker's price (its quote drifts from
+                            # ^NDX): the bot's stop is hit, so close now (FTMO / Capital refused such stops, 18 Nov)
+                            if tradeable:
+                                close_trade(ref, t, pos[t["deal"]], "STOP (trailed past the price)")
+                            continue
+                        try:
+                            ig.update_stop(t["deal"], new, p.get("limitLevel"))
+                        except Exception as e:     # one refused stop must not block the rest of the run
+                            print(f"[{broker}] {ref}: stop move to {new:.1f} refused: {e}")
+                            continue
                         t["stop"] = new
                         print(f"[{broker}] {ref}: stop moved {old:.1f} -> {new:.1f}")   # no phone message (the owner, 11 Nov)
                 continue

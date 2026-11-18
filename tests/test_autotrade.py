@@ -97,6 +97,31 @@ def test_trailing_stop_moves(ig):
     assert ig.calls[-1][0] == "stop" and ig.calls[-1][2] == round(28200.0 + 300.5, 1)
 
 
+
+def test_trailed_stop_past_the_price_closes_instead(ig):
+    """18 Nov 2026: FTMO / Capital refused a short's trailed stop below their ask; the bot's stop is hit -> close."""
+    w = dict(ref="P2611040935", side=-1, entry=28000.0, t_in=t("09:35"), stop=28336.0, target=None)
+    at.want("P", [w], 28000.0)
+    at.flush(1000, t("09:46"))
+    at.want("P", [dict(w, stop=27990.0)], 27980.0)   # shift +300.5 -> stop 28290.5, below the offer 28301
+    at.flush(1000, t("10:01"))
+    assert ig.calls[-1][:3] == ("close", "D0", "BUY")
+    assert at.load("demo")["trades"]["P2611040935"]["status"] == "closed"
+
+
+def test_refused_stop_move_does_not_block_new_orders(ig, monkeypatch):
+    w = dict(ref="P2611040935", side=-1, entry=28000.0, t_in=t("09:35"), stop=28336.0, target=None)
+    at.want("P", [w], 28000.0)
+    at.flush(1000, t("09:46"))
+
+    def refuse(self, deal, stop, limit):
+        raise RuntimeError("TRADING_BAD_STOPS")
+    monkeypatch.setattr(FakeIG, "update_stop", refuse)
+    at.want("P", [dict(w, stop=28200.0)], 27900.0)
+    at.want("N", [dict(ref="N2611041000", side=1, entry=28000.0, t_in=t("10:00"), stop=27916.0, target=None)], 28000.0)
+    at.flush(1000, t("10:01"))
+    assert ig.calls[-1][0] == "open" and ig.calls[-1][1] == "BUY"
+
 def test_dry_mode_sends_nothing(ig, monkeypatch):
     monkeypatch.setenv("AUTO_TRADE", "dry")
     at.want("N", [dict(ref="N1", side=1, entry=28000.0, t_in=t("10:30"), stop=27916.0, target=None)], 28000.0)
