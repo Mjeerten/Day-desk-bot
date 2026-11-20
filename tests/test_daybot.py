@@ -202,3 +202,16 @@ def test_phone_alerts_off_sends_nothing(monkeypatch):
     monkeypatch.setenv("PHONE_ALERTS", "off")
     bot.push("topic", "20261109-levels", "Day bot running", "x", ["bell"])
     assert sent == []
+
+
+def test_scale_now_uses_index_in_session_and_futures_outside(monkeypatch):
+    import desk.bot as b
+    ny = "America/New_York"
+    t = pd.date_range("2026-11-16 10:00", periods=30, freq="1min", tz=ny)
+    ndx1 = pd.DataFrame({"open": 100.0, "high": 101.0, "low": 99.0, "close": 100.0}, index=t)
+    nq1 = ndx1.assign(close=90.0)          # late futures: 10 points behind
+    monkeypatch.setattr(b, "five_minute", lambda now, day: (None, None, nq1, ndx1, 50.0))
+    now = pd.Timestamp("2026-11-16 10:30:30", tz=ny)
+    assert b.scale_now(now, None) == 150.0              # ^NDX 100 + basis 50
+    night = pd.Timestamp("2026-11-16 20:00", tz=ny)     # index stale -> last futures close
+    assert b.scale_now(night, None) == 90.0

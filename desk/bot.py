@@ -473,7 +473,30 @@ def build(now, day, data=None, missed=()):
     return ev, info
 
 
-def monday(now, stake, since, missed=()):
+def scale_now(now, day):
+    """'Where is the futures price NOW' for the broker orders (levels are shifted by broker mid - this). Yahoo's NQ=F
+    runs ~10 min late (the 15m close even more), which put demo stops ~140 points off after a fast move (18 Nov 2026).
+    In the session ^NDX is near real time: its last 1m close + the basis; outside it the last 1m futures close."""
+    nq5, ndx5, nq1, ndx1, gap = five_minute(now, day)
+    ndx = complete(ndx1, 1, now)
+    if len(ndx) and np.isfinite(gap) and pd.Timestamp(now) - ndx.index[-1] <= pd.Timedelta(minutes=5):
+        return float(ndx.close.iloc[-1]) + gap
+    nqc = complete(nq1, 1, now)
+    return float(nqc.close.iloc[-1]) if len(nqc) else None
+
+
+def _scale_or(now, day, nq15):
+    """scale_now, or the last complete 15m futures close if the 1m candles fail (the old way)."""
+    try:
+        if day is not None:
+            return scale_now(now, day)
+    except Exception as err:  # noqa: Yahoo hiccup
+        print(f"1-minute price not found ({err!r}); using the 15m futures close")
+    nqc = complete(nq15, 15, now)
+    return float(nqc.close.iloc[-1]) if len(nqc) else None
+
+
+def monday(now, stake, since, missed=(), day=None):
     """Monday-dip paper alerts (desk/monday_dip.py): (messages, open trade or None). IBS trades bought on a `missed`
     date do not block it (the owner does not hold them)."""
     nq = yahoo("NQ=F", "15m", "60d", prepost=True)
@@ -481,10 +504,9 @@ def monday(now, stake, since, missed=()):
     ibs = [(a, b) for a, b in md.ibs_open(complete(yahoo("^NDX", "15m", "60d"), 15, now)) if a.date() not in missed]
     rows = md.trades(h, ibs)
     open_ = next((r for r in rows if r["why"] == "open"), None)
-    nqc = complete(nq, 15, now)
     at.want("M", [dict(ref=at.ref_of("M", open_["t_in"]), side=1, entry=open_["entry"], t_in=open_["t_in"],
                        stop=open_["stop"], target=open_["target"])] if open_ else [],
-            float(nqc.close.iloc[-1]) if len(nqc) else None)
+            _scale_or(now, day, nq) if open_ else None)
     return md.messages(rows, stake, since, now), open_
 
 
@@ -555,7 +577,7 @@ def send_monday(now, day, topic, live, fallback, missed=()):
     if 'I took it' was tapped)."""
     try:
         stake = stake_for(day, default=fallback)[0]
-        msgs, open_ = monday(pd.Timestamp(now), stake, md.week_start(now), missed)
+        msgs, open_ = monday(pd.Timestamp(now), stake, md.week_start(now), missed, day)
     except Exception as err:  # noqa: Yahoo hiccup etc.; the next run tries again
         print(f"Monday dip not checked ({err!r})")
         return None
@@ -583,9 +605,7 @@ def send_momentum(now, day, topic, live, fallback):
         msgs = sm.messages(dec, st, day, stake)
         # the broker orders need 'where is the futures price NOW': Yahoo's NQ=F runs ~10 min late, which put the demo
         # stops ~140 points off after a fast move (18 Nov 2026); ^NDX is near real time, so use it + the basis
-        nqc = complete(nq1, 1, now)
-        scale = float(ndx1.close.iloc[-1]) + gap if len(ndx1) and np.isfinite(gap) else \
-            (float(nqc.close.iloc[-1]) if len(nqc) else None)
+        scale = scale_now(now, day)
         at.want("P", [dict(ref=at.ref_of("P", dec["t_in"]), side=dec["side"], entry=dec["entry"], t_in=dec["t_in"],
                            stop=st["stop"], target=None)] if st["why"] == "open" else [], scale)
     except Exception as err:  # noqa: Yahoo hiccup etc.; the next run tries again
