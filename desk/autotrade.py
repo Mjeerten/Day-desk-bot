@@ -68,7 +68,7 @@ FTMO_MAX_LOSS = 0.08                  # FTMO stops the account at 10 % below the
 
 
 def ftmo_accounts(text=None):
-    """CTRADER_ACCOUNTS = 'digits=name:size:target, ...' (e.g. '325=10k:0.33:10, 4567=100k:0.33:10'): several FTMO accounts
+    """CTRADER_ACCOUNTS = 'digits=name:size:target, ...' (e.g. '1111=10k:0.33:10, 4567=100k:0.33:10'): several FTMO accounts
     at once, each with its own size (x its start balance), phase profit target in % (10 challenge, 5 verification,
     0 funded = no target) and state file. Empty = the single account of CTRADER_ACCOUNT / CTRADER_SIZE (the newest)."""
     out = []

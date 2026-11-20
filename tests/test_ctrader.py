@@ -179,8 +179,8 @@ def test_yen_week_on_ftmo(env, tmp_path):
 
 
 def test_ftmo_accounts_parse():
-    a = autotrade.ftmo_accounts("325=10k:0.33:10, 4567=100k:0.25:5,99=:")
-    assert a[0] == dict(account="325", name="10k", size=0.33, target=0.10)
+    a = autotrade.ftmo_accounts("1111=10k:0.33:10, 4567=100k:0.25:5,99=:")
+    assert a[0] == dict(account="1111", name="10k", size=0.33, target=0.10)
     assert a[1]["size"] == 0.25 and a[1]["target"] == 0.05 and a[2]["name"] == "99" and a[2]["size"] == 0.33
 
 
