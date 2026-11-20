@@ -77,9 +77,22 @@ jobs:
           CAPITAL_IDENTIFIER: ${{ secrets.CAPITAL_IDENTIFIER }}
           CAPITAL_PASSWORD: ${{ secrets.CAPITAL_PASSWORD }}
           CAPITAL_ACCOUNT_ID: ${{ secrets.CAPITAL_ACCOUNT_ID }}
+          # REAL MONEY on Capital.com (off until Maarten's go): orders only with variable CAPITAL_LIVE_TRADE = live AND
+          # variable CAPITAL_LIVE_GO = yes; size CAPITAL_LIVE_SIZE (1.0, later 1.5) x the month's first balance
+          CAPITAL_LIVE_TRADE: ${{ vars.CAPITAL_LIVE_TRADE }}
+          CAPITAL_LIVE_GO: ${{ vars.CAPITAL_LIVE_GO }}
+          CAPITAL_LIVE_SIZE: ${{ vars.CAPITAL_LIVE_SIZE }}
+          CAPITAL_LIVE_API_KEY: ${{ secrets.CAPITAL_LIVE_API_KEY }}
+          CAPITAL_LIVE_IDENTIFIER: ${{ secrets.CAPITAL_LIVE_IDENTIFIER }}
+          CAPITAL_LIVE_PASSWORD: ${{ secrets.CAPITAL_LIVE_PASSWORD }}
+          CAPITAL_LIVE_ACCOUNT_ID: ${{ secrets.CAPITAL_LIVE_ACCOUNT_ID }}
           # same orders on the FTMO account via cTrader (desk/ctrader.py): variable CTRADER_TRADE = dry (default) | demo | off
           CTRADER_TRADE: ${{ vars.CTRADER_TRADE }}
           CTRADER_SIZE: ${{ vars.CTRADER_SIZE }}
+          # several FTMO accounts at once (paid challenges): 'account=name:size:target%, ...' (autotrade.ftmo_accounts)
+          CTRADER_ACCOUNTS: ${{ vars.CTRADER_ACCOUNTS }}
+          CTRADER_ACCOUNT: ${{ vars.CTRADER_ACCOUNT }}
+          CTRADER_TARGET: ${{ vars.CTRADER_TARGET }}
           CTRADER_CLIENT_ID: ${{ secrets.CTRADER_CLIENT_ID }}
           CTRADER_CLIENT_SECRET: ${{ secrets.CTRADER_CLIENT_SECRET }}
           CTRADER_ACCESS_TOKEN: ${{ secrets.CTRADER_ACCESS_TOKEN }}
@@ -141,9 +154,22 @@ jobs:
           CAPITAL_IDENTIFIER: ${{ secrets.CAPITAL_IDENTIFIER }}
           CAPITAL_PASSWORD: ${{ secrets.CAPITAL_PASSWORD }}
           CAPITAL_ACCOUNT_ID: ${{ secrets.CAPITAL_ACCOUNT_ID }}
+          # REAL MONEY on Capital.com (off until Maarten's go): orders only with variable CAPITAL_LIVE_TRADE = live AND
+          # variable CAPITAL_LIVE_GO = yes; size CAPITAL_LIVE_SIZE (1.0, later 1.5) x the month's first balance
+          CAPITAL_LIVE_TRADE: ${{ vars.CAPITAL_LIVE_TRADE }}
+          CAPITAL_LIVE_GO: ${{ vars.CAPITAL_LIVE_GO }}
+          CAPITAL_LIVE_SIZE: ${{ vars.CAPITAL_LIVE_SIZE }}
+          CAPITAL_LIVE_API_KEY: ${{ secrets.CAPITAL_LIVE_API_KEY }}
+          CAPITAL_LIVE_IDENTIFIER: ${{ secrets.CAPITAL_LIVE_IDENTIFIER }}
+          CAPITAL_LIVE_PASSWORD: ${{ secrets.CAPITAL_LIVE_PASSWORD }}
+          CAPITAL_LIVE_ACCOUNT_ID: ${{ secrets.CAPITAL_LIVE_ACCOUNT_ID }}
           # same orders on the FTMO account via cTrader (desk/ctrader.py): variable CTRADER_TRADE = dry (default) | demo | off
           CTRADER_TRADE: ${{ vars.CTRADER_TRADE }}
           CTRADER_SIZE: ${{ vars.CTRADER_SIZE }}
+          # several FTMO accounts at once (paid challenges): 'account=name:size:target%, ...' (autotrade.ftmo_accounts)
+          CTRADER_ACCOUNTS: ${{ vars.CTRADER_ACCOUNTS }}
+          CTRADER_ACCOUNT: ${{ vars.CTRADER_ACCOUNT }}
+          CTRADER_TARGET: ${{ vars.CTRADER_TARGET }}
           CTRADER_CLIENT_ID: ${{ secrets.CTRADER_CLIENT_ID }}
           CTRADER_CLIENT_SECRET: ${{ secrets.CTRADER_CLIENT_SECRET }}
           CTRADER_ACCESS_TOKEN: ${{ secrets.CTRADER_ACCESS_TOKEN }}

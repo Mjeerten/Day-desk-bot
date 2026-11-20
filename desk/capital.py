@@ -1,5 +1,6 @@
-"""Capital.com REST client for automatic orders on the Capital.com DEMO account (AUTOMATION.md). Demo only: the base URL is
-fixed to Capital.com's demo server, so no live order can be sent from this code.
+"""Capital.com REST client for automatic orders on the Capital.com DEMO account (AUTOMATION.md), and (REAL MONEY, off until
+the owner's go) on his real account: Capital(live=True) uses the live server and only the separate CAPITAL_LIVE_* secrets;
+desk/autotrade.py only sends live orders with CAPITAL_LIVE_TRADE=live AND CAPITAL_LIVE_GO=yes.
 
 Why Capital.com (9 Nov 2026): no fee per order, US Tech 100 minimum 0.001 contract (~EUR 25), so the whole desk fits the
 plan's size from EUR 1,000-2,000 (IG's minimum is ~EUR 5,400; IBKR's USD 1 minimum fee eats the small trades, round 35).
@@ -25,21 +26,24 @@ import time
 
 import requests
 
-BASE = "https://demo-api-capital.backend-capital.com/api/v1"   # DEMO ONLY. Never change without the owner's go.
+BASE = "https://demo-api-capital.backend-capital.com/api/v1"   # demo server (the default). Never change.
+LIVE_BASE = "https://api-capital.backend-capital.com/api/v1"   # real money: only via Capital(live=True)
 EPIC = os.environ.get("CAPITAL_EPIC") or "US100"
 SEARCH = ("US Tech 100", "Nasdaq", "US100")
 
 
 class Capital:
-    def __init__(self, key=None, user=None, password=None, account=None):
-        self.key = key or os.environ["CAPITAL_API_KEY"].strip()
-        self.user = user or os.environ["CAPITAL_IDENTIFIER"].strip()
-        self.password = password or os.environ["CAPITAL_PASSWORD"]
-        self.account = (account or os.environ.get("CAPITAL_ACCOUNT_ID") or "").strip()
+    def __init__(self, key=None, user=None, password=None, account=None, live=False):
+        pre = "CAPITAL_LIVE_" if live else "CAPITAL_"      # real-money keys never mix with the demo keys
+        self.live, self.base = live, LIVE_BASE if live else BASE
+        self.key = key or os.environ[pre + "API_KEY"].strip()
+        self.user = user or os.environ[pre + "IDENTIFIER"].strip()
+        self.password = password or os.environ[pre + "PASSWORD"]
+        self.account = (account or os.environ.get(pre + "ACCOUNT_ID") or "").strip()
         self.h = {"X-CAP-API-KEY": self.key, "Content-Type": "application/json", "Accept": "application/json"}
 
     def req(self, method, path, body=None, params=None):
-        r = requests.request(method, BASE + path, headers=self.h, params=params,
+        r = requests.request(method, self.base + path, headers=self.h, params=params,
                              data=json.dumps(body) if body is not None else None, timeout=30)
         if r.status_code >= 400:
             raise RuntimeError(f"Capital.com {method} {path}: HTTP {r.status_code} {r.text[:300]}")
@@ -135,10 +139,10 @@ def mask(s):
     return s[:2] + "*" * max(len(s) - 4, 0) + s[-2:] if len(s) > 4 else "*" * len(s)
 
 
-def check():
-    c = Capital()
+def check(live=False):
+    c = Capital(live=live)
     s = c.login()
-    print(f"logged in to the Capital.com DEMO server; account {mask(s['currentAccountId'])} ({s['currencyIsoCode']})")
+    print(f"logged in to the Capital.com {'LIVE (real money, read only)' if live else 'DEMO'} server; account {mask(s['currentAccountId'])} ({s['currencyIsoCode']})")
     for a in s["accounts"]:
         print(f"  account {mask(a.get('accountId'))}: {a.get('accountType')} {a.get('accountName')} {a.get('currency')} "
               f"preferred={a.get('preferred')} balance {a.get('balance')}")
@@ -208,12 +212,14 @@ def main():
     ap = argparse.ArgumentParser()
     ap.add_argument("--check", action="store_true")
     ap.add_argument("--history", type=int, metavar="DAYS")
+    ap.add_argument("--live", action="store_true", help="--check the real account (CAPITAL_LIVE_* secrets, no orders)")
     a = ap.parse_args()
-    missing = [k for k in ("CAPITAL_API_KEY", "CAPITAL_IDENTIFIER", "CAPITAL_PASSWORD") if not os.environ.get(k)]
+    pre = "CAPITAL_LIVE_" if a.live else "CAPITAL_"
+    missing = [pre + k for k in ("API_KEY", "IDENTIFIER", "PASSWORD") if not os.environ.get(pre + k)]
     if missing:
         sys.exit(f"missing secrets: {', '.join(missing)}")
     if a.check:
-        check()
+        check(a.live)
     if a.history:
         history(a.history)
 

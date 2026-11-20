@@ -176,3 +176,48 @@ def test_yen_week_on_ftmo(env, tmp_path):
     assert o["label"] == "Y261116L" and sent[0].startswith("BUY USD/JPY") and sent[0].endswith("| FTMO")
     st = autotrade.load("demo", "ctrader")
     assert st["yen"]["Y261116L"]["status"] == "open" and st["yen"]["Y261116L"]["size"] == 8000
+
+
+def test_ftmo_accounts_parse():
+    a = autotrade.ftmo_accounts("325=10k:0.33:10, 4567=100k:0.25:5,99=:")
+    assert a[0] == dict(account="325", name="10k", size=0.33, target=0.10)
+    assert a[1]["size"] == 0.25 and a[1]["target"] == 0.05 and a[2]["name"] == "99" and a[2]["size"] == 0.33
+
+
+def _two_accounts(env, tmp_path):
+    fake(env, accounts=[{"ctidTraderAccountId": 9592, "isLive": True, "brokerTitleShort": "FTMO Platform"},
+                        {"ctidTraderAccountId": 8811, "isLive": True, "brokerTitleShort": "FTMO Platform"}])
+    env.setattr(autotrade, "BROKERS", dict(autotrade.BROKERS))
+    env.setenv("CTRADER_ACCOUNTS", "9592=trial:0.33:0, 8811=100k:0.5:10")
+    autotrade._ftmo_brokers()
+    for k in ("ctrader-9592", "ctrader-8811"):
+        autotrade.BROKERS[k]["state"] = str(tmp_path / (k + "-{mode}.json"))
+    env.setattr(autotrade, "_wants", {})
+
+
+def _want_noise(now):
+    autotrade.want("N", [dict(ref="N2611181000", side=1, entry=25000.0, t_in=now - pd.Timedelta(minutes=5),
+                              stop=24925.0, target=None)], scale_px=25010.0)
+
+
+def test_two_ftmo_accounts_each_own_size_and_state(env, tmp_path):
+    _two_accounts(env, tmp_path)
+    assert "ctrader" not in autotrade.BROKERS and autotrade.BROKERS["ctrader-8811"]["label"] == "FTMO 100k"
+    now = pd.Timestamp("2026-11-18 10:05", tz="America/New_York")
+    _want_noise(now)
+    autotrade._flush("dry", 1000.0, now, "ctrader-9592")
+    autotrade._flush("dry", 1000.0, now, "ctrader-8811")
+    a, b = autotrade.load("dry", "ctrader-9592"), autotrade.load("dry", "ctrader-8811")
+    assert a["trades"]["N2611181000"]["size"] == 0.12 and b["trades"]["N2611181000"]["size"] == 0.18
+
+
+def test_ftmo_max_loss_and_target_stop_new_trades(env, tmp_path, capsys):
+    _two_accounts(env, tmp_path)
+    now = pd.Timestamp("2026-11-18 10:05", tz="America/New_York")
+    for k, start in (("ctrader-9592", 11000.0), ("ctrader-8811", 9000.0)):   # equity 9,974.5: -9.3 % / +10.8 %
+        autotrade.save({"trades": {}, "day": {}, "start_balance": start}, "dry", k)
+        _want_noise(now)
+        autotrade._flush("dry", 1000.0, now, k)
+        assert "N2611181000" not in autotrade.load("dry", k)["trades"]
+    out = capsys.readouterr().out
+    assert "8% below the start" in out and "profit target 10% reached" in out

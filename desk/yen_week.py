@@ -72,7 +72,7 @@ def run(stake, now=None):
     if not at.enabled:
         return
     now = pd.Timestamp(now or pd.Timestamp.now(tz=NY)).tz_convert(NY)
-    for broker in BROKERS:
+    for broker in [b for b in at.BROKERS if b.split("-")[0] in BROKERS]:
         m = mode(broker)
         if m == "off":
             print(f"[yen/{broker}] off ({at.BROKERS[broker]['mode_env']} / YEN_TRADE off or secrets missing)")
@@ -104,14 +104,17 @@ def _run(m, stake, now, broker="ig"):
     import importlib
     B = at.BROKERS[broker]
     mod = importlib.import_module(B["module"])
-    if B["demo_host"] not in mod.BASE:
-        raise RuntimeError("not the demo server: refusing to trade")
     is_ig = broker == "ig"
-    epic, lab = {"ig": EPIC, "capital": CAP_EPIC}.get(broker, CT_EPIC), B["label"]
+    epic, lab = {"ig": EPIC, "capital": CAP_EPIC}.get(broker.split("-")[0], CT_EPIC), B["label"]   # ctrader-<account>: FTMO
     quiet = not is_ig and m == "dry"
     dry = " (dry run)" if m == "dry" else ""
-    ig = getattr(mod, B["cls"])()
+    ig = at.client(B, mod)
+    at.safe(B, mod, ig, m)
     sess = ig.login()
+    if "month_x" in B:                   # real account: plan leverage x the balance at the month's first run
+        info = sess.get("accountInfo", {})
+        eq = float(info.get("balance") or 0) + float(info.get("profitLoss") or 0)
+        stake = B["month_x"] * st.setdefault("month", {}).setdefault(f"{now:%y%m}", eq)
     if "stake_x" in B:                   # prop account (FTMO): a share of its start balance, as its Nasdaq orders
         info = sess.get("accountInfo", {})
         stake = B["stake_x"] * st.setdefault("start_balance", float(info.get("balance") or 0) + float(info.get("profitLoss") or 0))
@@ -131,7 +134,7 @@ def _run(m, stake, now, broker="ig"):
     for r in to_close:
         t = yen[r]
         p = pos.get(t.get("deal"))
-        if m == "demo":
+        if m in at.SEND:
             if not p:
                 t.update(status="closed_elsewhere", closed=str(now))
                 at.notify(f"{lab}: {NAME} position gone", f"{r} was no longer open on {lab} (closed by hand?).", quiet)
@@ -169,7 +172,7 @@ def _run(m, stake, now, broker="ig"):
             raise RuntimeError(f"size {size} x {contract} looks too big for a EUR {stake:.0f} stake: not sent")
         size = round(size, 4)
         lvl = px * (1 + SLIP_PCT) if side == 1 else px * (1 - SLIP_PCT)
-        if m == "demo":
+        if m in at.SEND:
             c = ig.open(epic, "BUY" if side == 1 else "SELL", size, lvl, None, None,
                         f"{ref}-{int(time.time()) % 100000}", **({"currency": cur, "digits": dec} if is_ig else {}))
             if c.get("dealStatus") != "ACCEPTED":

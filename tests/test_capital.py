@@ -143,3 +143,63 @@ def test_capital_off_without_secrets(monkeypatch):
     for k in ("CAPITAL_API_KEY", "CAPITAL_IDENTIFIER", "CAPITAL_PASSWORD"):
         monkeypatch.delenv(k, raising=False)
     assert at.mode("capital") == "off"
+
+
+class FakeLive(FakeCap):
+    def __init__(self, live=False):
+        self.live, self.base = live, cap.LIVE_BASE if live else cap.BASE
+
+
+@pytest.fixture
+def real(capital, monkeypatch, tmp_path):
+    monkeypatch.setattr(cap, "Capital", FakeLive)
+    monkeypatch.setenv("CAPITAL_TRADE", "off")                   # demo account off: only the real one here
+    monkeypatch.setitem(at.BROKERS, "capital-live", dict(at.BROKERS["capital-live"],
+                                                         state=str(tmp_path / "live-{mode}.json"), month_x=1.0))
+    for k in ("CAPITAL_LIVE_API_KEY", "CAPITAL_LIVE_IDENTIFIER", "CAPITAL_LIVE_PASSWORD"):
+        monkeypatch.setenv(k, "x")
+    monkeypatch.setenv("CAPITAL_LIVE_TRADE", "live")
+    return capital
+
+
+def _noise():
+    at.want("N", [dict(ref="N2611041030", side=1, entry=26700.0, t_in=t("10:30"), stop=26700 * 0.997, target=None)], 26710.0)
+
+
+def test_real_money_needs_both_switches(real, monkeypatch):
+    monkeypatch.delenv("CAPITAL_LIVE_GO", raising=False)
+    assert at.mode("capital-live") == "dry"                       # CAPITAL_LIVE_TRADE=live alone is a dry run
+    monkeypatch.setenv("CAPITAL_LIVE_GO", "yes")
+    monkeypatch.setenv("CAPITAL_LIVE_TRADE", "demo")
+    assert at.mode("capital-live") == "dry"                       # 'demo' never means real orders
+    monkeypatch.setenv("CAPITAL_LIVE_TRADE", "live")
+    assert at.mode("capital-live") == "live" and at.mode("capital") == "off"
+    monkeypatch.delenv("CAPITAL_LIVE_API_KEY")
+    assert at.mode("capital-live") == "off"
+
+
+def test_real_money_dry_sends_nothing_and_live_sizes_off_the_month_balance(real, monkeypatch):
+    _noise()
+    at.flush(5000, t("10:36"))                                    # no CAPITAL_LIVE_GO: dry
+    assert real.calls == []
+    monkeypatch.setenv("CAPITAL_LIVE_GO", "yes")
+    _noise()
+    at.flush(5000, t("10:36"))                                    # the plan's practice stake (5000) is not used
+    assert real.calls[0][:4] == ("open", cap.EPIC, "BUY", 0.037)  # 1.0 x the month's balance 1,000 / 27,001
+    assert at.load("live", "capital-live")["month"] == {"2611": 1000.0}
+
+
+def test_demo_and_real_clients_never_cross(monkeypatch):
+    B = at.BROKERS["capital-live"]
+    with pytest.raises(RuntimeError):
+        at.safe(B, cap, FakeLive(live=False), "live")             # real broker on the demo server
+    with pytest.raises(RuntimeError):
+        at.safe(at.BROKERS["capital"], cap, FakeLive(live=True), "demo")   # demo broker with a live client
+    with pytest.raises(RuntimeError):
+        at.safe(B, cap, FakeLive(live=True), "demo")
+    at.safe(B, cap, FakeLive(live=True), "live")
+    monkeypatch.setenv("CAPITAL_LIVE_API_KEY", "k")
+    monkeypatch.setenv("CAPITAL_LIVE_IDENTIFIER", "u")
+    monkeypatch.setenv("CAPITAL_LIVE_PASSWORD", "p")
+    c = cap.Capital(live=True)
+    assert c.base == cap.LIVE_BASE and c.key == "k" and cap.Capital(key="a", user="b", password="c").base == cap.BASE

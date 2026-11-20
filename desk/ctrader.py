@@ -122,10 +122,11 @@ def _load_tokens():
 class FTMO:
     """The cTrader account (FTMO, or a cTrader demo) in the shape desk/autotrade.py expects from a broker client."""
 
-    def __init__(self):
+    def __init__(self, account=None):
         self.c = None
         self.acc = None
         self.sym = {}
+        self.want = str(account or os.environ.get("CTRADER_ACCOUNT") or "").strip()   # last digits; '' = the newest
 
     # --- connection -------------------------------------------------------------------------------------------------
     def _connect(self):
@@ -146,7 +147,7 @@ class FTMO:
             probe.token = r["accessToken"]
             accs = probe.accounts()
         probe.close()
-        want = (os.environ.get("CTRADER_ACCOUNT") or "").strip()
+        want = self.want
         ok = [a for a in accs if "FTMO" in str(a.get("brokerTitleShort", "")).upper() or not a.get("isLive")]
         if want:
             ok = [a for a in ok if str(a["ctidTraderAccountId"]).endswith(want) or str(a.get("traderLogin", "")).endswith(want)]

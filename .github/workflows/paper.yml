@@ -6,7 +6,8 @@ name: paper flux
 # Paper tracking of the round-14 Flux reversal model (desk/paper_flux.py): every weekday after the US close, the last
 # 60 days of Yahoo ^NDX 5m candles are replayed and journal/paper_flux.csv is updated (Day Desk logbook, Paper tab).
 # Also the Monday dip (desk/monday_dip.py -> journal/paper_monday.csv): every trade the bot's rule gave, to check
-# the alerts against.
+# the alerts against. Same for Session Momentum, Overnight Bias and the live three (desk/paper_desk.py ->
+# journal/paper_desk.csv), then desk/weekly_check.py compares each demo broker's trades with them (go-live check).
 # 21:20 UTC is after the 16:00 New York close in both summer (20:00 UTC) and winter (21:00 UTC) time.
 on:
   schedule:
@@ -15,6 +16,7 @@ on:
 
 permissions:
   contents: read
+  actions: read
 
 jobs:
   run:
@@ -37,10 +39,15 @@ jobs:
       - run: python -m desk.monday_dip
       - run: python -m desk.session_momentum
       - run: python -m desk.overnight_bias
+      - run: python -m desk.paper_desk
+      - name: demo brokers vs the bot (desk/weekly_check.py, from this repo's day bot run logs)
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: python -m desk.weekly_check --fetch
       - name: commit the paper logs to the private repo
         working-directory: private
         run: |
           git config user.name "github-actions[bot]"
           git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
-          git add journal/paper_flux.csv journal/paper_monday.csv journal/paper_momentum.csv journal/paper_obias.csv
+          git add journal/paper_flux.csv journal/paper_monday.csv journal/paper_momentum.csv journal/paper_obias.csv journal/paper_desk.csv journal/demo_trades.csv journal/demo_events.json journal/demo_check.txt
           git commit -m "Paper flux: update after the US close" && git pull --rebase -q && git push || echo "nothing to commit"

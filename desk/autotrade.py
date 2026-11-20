@@ -53,8 +53,54 @@ BROKERS = {
                     stake_x=float(os.environ.get("CTRADER_SIZE") or 0.33),    # round 46: 0.33x the desk
                     secrets=("CTRADER_CLIENT_ID", "CTRADER_CLIENT_SECRET", "CTRADER_ACCESS_TOKEN")),
 }
+    # REAL MONEY (off until the owner's go, plan.json 'real 1x'): orders only with CAPITAL_LIVE_TRADE=live AND
+    # CAPITAL_LIVE_GO=yes; own secrets; size = CAPITAL_LIVE_SIZE (plan leverage, 1.0 then 1.5) x the balance on the
+    # month's first run (plan.py's rule: gains reinvested monthly).
+BROKERS["capital-live"] = dict(label="Capital.com REAL", module="desk.capital", cls="Capital", mode_env="CAPITAL_LIVE_TRADE",
+                               live=True, init=dict(live=True), go_env="CAPITAL_LIVE_GO",
+                               month_x=float(os.environ.get("CAPITAL_LIVE_SIZE") or 1.0),
+                               state=".daybot/capital-live-{mode}.json",
+                               secrets=("CAPITAL_LIVE_API_KEY", "CAPITAL_LIVE_IDENTIFIER", "CAPITAL_LIVE_PASSWORD"))
+SEND = ("demo", "live")               # modes that send orders
 CAP_STATE = os.environ.get("CAPITAL_STATE") or ".daybot/capital-{mode}.json"
 CT_STATE = os.environ.get("CTRADER_STATE") or ".daybot/ctrader-{mode}.json"
+FTMO_MAX_LOSS = 0.08                  # FTMO stops the account at 10 % below the start balance: no new trades below 8 %
+
+
+def ftmo_accounts(text=None):
+    """CTRADER_ACCOUNTS = 'digits=name:size:target, ...' (e.g. '325=10k:0.33:10, 4567=100k:0.33:10'): several FTMO accounts
+    at once, each with its own size (x its start balance), phase profit target in % (10 challenge, 5 verification,
+    0 funded = no target) and state file. Empty = the single account of CTRADER_ACCOUNT / CTRADER_SIZE (the newest)."""
+    out = []
+    for part in (text if text is not None else os.environ.get("CTRADER_ACCOUNTS") or "").split(","):
+        part = part.strip()
+        if not part:
+            continue
+        acc, _, rest = part.partition("=")
+        name, size, target = (rest.split(":") + ["", "", ""])[:3]
+        out.append(dict(account=acc.strip(), name=name.strip() or acc.strip()[-3:], size=float(size or 0.33),
+                        target=float(target or 0) / 100))
+    return out
+
+
+def _ftmo_brokers():
+    accs = ftmo_accounts()
+    base = BROKERS.pop("ctrader")
+    if not accs:
+        BROKERS["ctrader"] = dict(base, ftmo=True, target=float(os.environ.get("CTRADER_TARGET") or 0) / 100)
+        return
+    for a in accs:
+        BROKERS[f"ctrader-{a['account']}"] = dict(base, label=f"FTMO {a['name']}", init=dict(account=a["account"]),
+                                                  stake_x=a["size"], target=a["target"], ftmo=True,
+                                                  state=f".daybot/ctrader-{a['account']}-{{mode}}.json")
+
+
+_ftmo_brokers()
+
+
+def client(B, mod):
+    """The broker client object for BROKERS entry B (FTMO entries name their account)."""
+    return getattr(mod, B["cls"])(**B.get("init", {}))
 
 _wants: dict[str, tuple[list[dict], float | None]] = {}
 enabled = False                       # bot.main sets it for live runs
@@ -65,7 +111,20 @@ def mode(broker="ig"):
     m = (os.environ.get(b["mode_env"]) or "dry").strip().lower()
     if not all(os.environ.get(k) for k in b["secrets"]):
         return "off"
+    if b.get("live"):                  # real money: 'live' needs the second switch too, anything else is a dry run
+        if m == "live" and (os.environ.get(b["go_env"]) or "").strip().lower() != "yes":
+            return "dry"
+        return m if m in ("off", "dry", "live") else "dry"
     return m if m in ("off", "dry", "demo") else "dry"
+
+
+def safe(B, mod, cl, m):
+    """Refuse to trade on the wrong server: demo brokers only on their demo host, the real broker only in mode live/dry."""
+    if B.get("live"):
+        if not (getattr(cl, "live", False) and getattr(cl, "base", "") == mod.LIVE_BASE and m in ("dry", "live")):
+            raise RuntimeError("real-money broker not set up as live: refusing to trade")
+    elif B["demo_host"] not in mod.BASE or getattr(cl, "live", False):
+        raise RuntimeError("not the demo server: refusing to trade")
 
 
 def want(strat, wants, scale_px=None):
@@ -76,7 +135,7 @@ def want(strat, wants, scale_px=None):
 
 
 def _state(m, broker):
-    return {"ig": STATE, "capital": CAP_STATE}.get(broker, CT_STATE).format(mode=m)
+    return ({"ig": STATE, "capital": CAP_STATE}.get(broker) or BROKERS.get(broker, {}).get("state", CT_STATE)).format(mode=m)
 
 
 def load(m, broker="ig"):
@@ -160,16 +219,15 @@ def _flush(m, stake, now, broker="ig"):
     import importlib
     B = BROKERS[broker]
     mod = importlib.import_module(B["module"])
-    if B["demo_host"] not in mod.BASE:
-        raise RuntimeError("not the demo server: refusing to trade")
     lab = B["label"]
     quiet = broker != "ig" and m == "dry"
     say = lambda title, body, tags=("warning",), prio=3: notify(title, body, quiet, tags, prio)
     dry = " (dry run)" if m == "dry" else ""
     EPIC_ = EPIC if broker == "ig" else mod.EPIC
-    ig = getattr(mod, B["cls"])()
+    ig = client(B, mod)
+    safe(B, mod, ig, m)
     sess = ig.login()
-    if m == "demo" and hasattr(ig, "ensure_hedging") and ig.ensure_hedging():
+    if m in SEND and hasattr(ig, "ensure_hedging") and ig.ensure_hedging():
         print(f"[{broker}] hedging mode switched on (long and short positions side by side)")
     st = load(m, broker)
     mk = ig.market(EPIC_)
@@ -183,20 +241,42 @@ def _flush(m, stake, now, broker="ig"):
     on_ig = {str(p["position"].get("dealReference") or "").split("-")[0] for p in pos.values()}
     bal = float(sess.get("accountInfo", {}).get("balance") or 0) + float(sess.get("accountInfo", {}).get("profitLoss") or 0)
     today = f"{now:%y%m%d}"
-    st["day"].setdefault(today, bal)
-    loss_stop = bal < st["day"][today] * (1 - B.get("day_loss", DAY_LOSS))
-    if "stake_x" in B:                     # prop account: a share of its starting balance, not the plan's stake
-        st.setdefault("start_balance", bal)
-        stake = B["stake_x"] * st["start_balance"]
+    if B.get("ftmo"):
+        # FTMO's daily limit runs from midnight Prague time and is a share of the START balance, floating P/L included
+        dkey = f"p{pd.Timestamp(now).tz_convert('Europe/Prague'):%y%m%d}"
+        start = st.setdefault("start_balance", bal)
+        st["day"].setdefault(dkey, bal)
+        loss_stop = bal < st["day"][dkey] - B.get("day_loss", DAY_LOSS) * start
+        stop_why = None
+        if bal < start * (1 - FTMO_MAX_LOSS):
+            loss_stop, stop_why = True, f"equity {bal:,.0f} is {FTMO_MAX_LOSS:.0%} below the start {start:,.0f} (FTMO ends it at 10%)"
+        elif B.get("target") and bal >= start * (1 + B["target"]):
+            loss_stop, stop_why = True, f"profit target {B['target']:.0%} reached ({bal:,.0f}): no new trades, open ones run out"
+        if stop_why and st.get("halt") != stop_why[:20]:
+            st["halt"] = stop_why[:20]
+            say(f"{lab}: new trades stopped", stop_why, ("warning",), 4)
+        stake = B["stake_x"] * start
+        day_start = st["day"][dkey]
+    else:
+        st["day"].setdefault(today, bal)
+        loss_stop = bal < st["day"][today] * (1 - B.get("day_loss", DAY_LOSS))
+        if "month_x" in B:                 # real account: plan leverage x the balance at the month's first run
+            mon = st.setdefault("month", {})
+            mon.setdefault(f"{now:%y%m}", bal)
+            stake = B["month_x"] * mon[f"{now:%y%m}"]
+        if "stake_x" in B:                 # prop account: a share of its starting balance, not the plan's stake
+            st.setdefault("start_balance", bal)
+            stake = B["stake_x"] * st["start_balance"]
+        day_start = st["day"][today]
     known = {t.get("deal") for t in st["trades"].values()}
     stray = [d for d in pos if d not in known] if broker != "ig" else []
     if stray:
         print(f"[{broker}] {len(stray)} position(s) not in our state file: no new orders this run")
     print(f"[{broker}] mode {m}; US Tech 100 bid {bid} offer {offer} {snap.get('marketStatus')}; {len(pos)} open; "
-          f"equity {bal:.2f} (day start {st['day'][today]:.2f})")
+          f"equity {bal:.2f} (day start {day_start:.2f})")
     # positions IG closed itself (stop / target hit on IG)
     for ref, t in st["trades"].items():
-        if t["status"] == "open" and t.get("deal") not in pos and m == "demo":
+        if t["status"] == "open" and t.get("deal") not in pos and m in SEND:
             t["status"] = "closed_by_ig"
             lv = [x for x in (t.get("stop"), t.get("target")) if x is not None]
             hit = min(lv, key=lambda x: abs(x - mid)) if lv else mid       # the level the price is nearest to now
@@ -212,7 +292,7 @@ def _flush(m, stake, now, broker="ig"):
     def close_trade(ref, t, p, what):
         """Close one open trade at the market; False if the broker refused (tries again next run)."""
         lvl = bid - SLIP if t["side"] == 1 else offer + SLIP
-        if m == "demo":
+        if m in SEND:
             c = ig.close(t["deal"], "SELL" if t["side"] == 1 else "BUY", float(p["position"]["size"]), lvl, ref + "x")
             if c.get("dealStatus") != "ACCEPTED":
                 say(f"{lab}: close refused", f"{ref}: {c.get('reason')}; tries again next run")
@@ -238,7 +318,7 @@ def _flush(m, stake, now, broker="ig"):
             if t["strat"] != strat or t["status"] != "open" or ref in wanted:
                 continue
             p = pos.get(t.get("deal"))
-            if not p and m == "demo":
+            if not p and m in SEND:
                 continue
             if not tradeable:
                 print(f"[{broker}] {ref}: should close, market {snap.get('marketStatus')}; next run")
@@ -248,7 +328,7 @@ def _flush(m, stake, now, broker="ig"):
         for ref, w in wanted.items():
             t = st["trades"].get(ref)
             if t and t["status"] == "open":
-                if w.get("stop") is not None and shift is not None and m == "demo" and t.get("deal") in pos:
+                if w.get("stop") is not None and shift is not None and m in SEND and t.get("deal") in pos:
                     new = round(w["stop"] + t.get("shift", shift), 1)
                     p = pos[t["deal"]]["position"]
                     old = float(p.get("stopLevel") or 0)
@@ -308,7 +388,7 @@ def _flush(m, stake, now, broker="ig"):
                 print(f"[{broker}] {ref}: target {tgt} already reached at {px}")
                 continue
             lvl = px + SLIP if w["side"] == 1 else px - SLIP
-            if m == "demo":
+            if m in SEND:
                 c = ig.open(EPIC_, "BUY" if w["side"] == 1 else "SELL", size, lvl, stop, tgt, f"{ref}-{int(time.time()) % 100000}")
                 if "WRONG_SIDE_OF_MARKET" in str(c.get("reason")):
                     # the price ran more than SLIP points past our limit while the order travelled (6 Nov, noise
@@ -356,7 +436,7 @@ def report(now=None):
     if now.weekday() >= 5 or now.hour != REPORT_HOUR:
         return
     for broker, b in BROKERS.items():
-        if mode(broker) != "demo":
+        if mode(broker) not in SEND:
             continue
         try:
             _report(broker, now)
@@ -367,16 +447,16 @@ def report(now=None):
 def _report(broker, now):
     import importlib
     B = BROKERS[broker]
-    st = load("demo", broker)
+    m = mode(broker)
+    st = load(m, broker)
     key = f"{now:%y%m%d}"
     rep = st.setdefault("report", {})
     if key in rep:
         print(f"[{broker}] daily report already sent")
         return
     mod = importlib.import_module(B["module"])
-    if B["demo_host"] not in mod.BASE:
-        raise RuntimeError("not the demo server")
-    cl = getattr(mod, B["cls"])()
+    cl = client(B, mod)
+    safe(B, mod, cl, m)
     info = cl.login().get("accountInfo", {})
     eq = float(info.get("balance") or 0) + float(info.get("profitLoss") or 0)
     ny = f"{now.tz_convert('America/New_York'):%y%m%d}"
@@ -417,7 +497,7 @@ def _report(broker, now):
            tags=("moneybag",) if day_eur >= 0 else ("chart_with_downwards_trend",), prio=4)
     rep[key] = round(eq, 2)
     st["report"] = {k: v for k, v in rep.items() if k >= f"{(now - pd.Timedelta(days=30)):%y%m%d}"}
-    save(st, "demo", broker)
+    save(st, m, broker)
 
 
 def _name_of(st, open_level):
