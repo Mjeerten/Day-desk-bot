@@ -122,6 +122,19 @@ def test_refused_stop_move_does_not_block_new_orders(ig, monkeypatch):
     at.flush(1000, t("10:01"))
     assert ig.calls[-1][0] == "open" and ig.calls[-1][1] == "BUY"
 
+def test_second_sweep_same_day_not_opened(ig):
+    """19 Nov 2026: the recomputed day turned the 10:00 short sweep (closed) into a 'first' long at 10:45."""
+    at.want("S", [dict(ref="S2611041000", side=-1, entry=28000.0, t_in=t("10:00"), stop=28040.0, target=27900.0)], 28000.0)
+    at.flush(1000, t("10:01"))
+    at.want("S", [], 27950.0)
+    at.flush(1000, t("10:31"))
+    n = len([c for c in ig.calls if c[0] == "open"])
+    at.want("S", [dict(ref="S2611041045", side=1, entry=27900.0, t_in=t("10:45"), stop=27860.0, target=28000.0)], 27900.0)
+    at.flush(1000, t("10:46"))
+    assert len([c for c in ig.calls if c[0] == "open"]) == n
+    assert at.load("demo")["trades"]["S2611041045"]["status"] == "second_today"
+
+
 def test_dry_mode_sends_nothing(ig, monkeypatch):
     monkeypatch.setenv("AUTO_TRADE", "dry")
     at.want("N", [dict(ref="N1", side=1, entry=28000.0, t_in=t("10:30"), stop=27916.0, target=None)], 28000.0)

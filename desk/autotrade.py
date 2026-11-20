@@ -38,6 +38,7 @@ LATE = {"N": 30, "S": 30, "I": 20, "M": 75, "P": 25, "O": 25}   # minutes after 
 NAMES = {"N": "noise band", "S": "overnight sweep", "I": "IBS", "M": "Monday dip", "P": "Session Momentum", "O": "Overnight Bias ORB",
          "Y": "yen week"}
 MAX_OPEN, MAX_STAKE_X, DAY_LOSS = 6, 3.0, 0.05
+ONE_A_DAY = ("S", "P", "I")    # overnight sweep, Session Momentum, IBS: one trade a day by rule
 SLIP = 5.0                            # limit price this many points through the quote (a market order that can't run away)
 STATE = os.environ.get("IG_STATE") or ".daybot/ig-{mode}.json"   # one file per mode: a dry run never mixes with demo
 
@@ -267,6 +268,13 @@ def _flush(m, stake, now, broker="ig"):
                         print(f"[{broker}] {ref}: stop moved {old:.1f} -> {new:.1f}")   # no phone message (the owner, 11 Nov)
                 continue
             if t:                                  # already traded (closed / refused): never again
+                continue
+            if strat in ONE_A_DAY and any(x.get("strat") == strat and x.get("day") == today and x.get("status") in
+                                          ("open", "closed") for x in st["trades"].values()):
+                # the bot recomputes the day each run; a moved basis can turn today's first sweep into a
+                # different one later (19 Nov 2026: short at 10:00 hit its target, then a 'first' long at 10:45)
+                st["trades"][ref] = dict(strat=strat, side=w["side"], status="second_today", day=today)
+                print(f"[{broker}] {ref}: {NAMES[strat]} already traded today, one a day")
                 continue
             if ref in on_ig:                       # opened by a run whose state was lost: never a second one
                 print(f"[{broker}] {ref}: already on {lab}, not opened again")
