@@ -65,7 +65,7 @@ jobs:
           CAPITAL_IDENTIFIER: ${{ secrets.CAPITAL_IDENTIFIER }}
           CAPITAL_PASSWORD: ${{ secrets.CAPITAL_PASSWORD }}
           CAPITAL_ACCOUNT_ID: ${{ secrets.CAPITAL_ACCOUNT_ID }}
-          # REAL MONEY on Capital.com (off until Maarten's go): orders only with variable CAPITAL_LIVE_TRADE = live AND
+          # REAL MONEY on Capital.com (off until the owner's go): orders only with variable CAPITAL_LIVE_TRADE = live AND
           # variable CAPITAL_LIVE_GO = yes; size CAPITAL_LIVE_SIZE (1.0, later 1.5) x the month's first balance
           CAPITAL_LIVE_TRADE: ${{ vars.CAPITAL_LIVE_TRADE }}
           CAPITAL_LIVE_GO: ${{ vars.CAPITAL_LIVE_GO }}
