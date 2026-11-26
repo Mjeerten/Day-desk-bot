@@ -68,6 +68,7 @@ from desk import overnight_bias as ob
 from desk import session_momentum as sm
 from desk import yen_week
 from desk.plan import stake_for
+from desk.market_days import close_of, short_by
 from desk.ticket import ticket, copy_actions, click_url
 
 NY = ZoneInfo("America/New_York")
@@ -178,7 +179,7 @@ def day_events(ndx15, onh, onl, line, o, day):
     sw, sw_done = None, day in FOMC_DAYS  # open sweep trade dict; no sweep on Fed decision days
     for ts, b in r.iterrows():
         start, end = tod(ts), tod(ts) + 15
-        last = end == CLOSE
+        last = end == close_of(day)          # 13:00 on a half day (desk/market_days.py)
         # sweep: manage the open trade (stop first if both are touched, like the backtest)
         if sw:
             s = sw["side"]
@@ -189,7 +190,7 @@ def day_events(ndx15, onh, onl, line, o, day):
                 ev.append(dict(kind="sweep_target", ts=ts, px=best(sw["target"], b.open), trade=sw)); sw = None
             elif last:
                 ev.append(dict(kind="sweep_close", ts=ts, px=b.close, trade=sw)); sw = None
-        if not sw_done and start >= OPEN and end <= LAST_ENTRY and not np.isnan(onh):
+        if not sw_done and start >= OPEN and end <= LAST_ENTRY - short_by(day) and not np.isnan(onh):
             for side, hit in ((1, b.low < onl and b.close > onl), (-1, b.high > onh and b.close < onh)):
                 if not hit:
                     continue
@@ -209,7 +210,7 @@ def day_events(ndx15, onh, onl, line, o, day):
         if line is not None and end % 30 == 0 and end >= OPEN + 30 and not n_stopped:
             if pos_n and b.close < o:
                 ev.append(dict(kind="noise_exit", ts=ts, px=b.close, entry=n_entry)); pos_n = False
-            elif not pos_n and end <= LAST_ENTRY and start in line.index and b.close > line[start]:
+            elif not pos_n and end <= LAST_ENTRY - short_by(day) and start in line.index and b.close > line[start]:
                 pos_n, n_entry, n_stop = True, b.close, b.close * (1 - NSTOP)
                 ev.append(dict(kind="noise_entry", ts=ts, px=b.close, line=float(line[start])))
         if last and pos_n:
@@ -767,6 +768,9 @@ def _main():
         if md.window(now):
             md_open = send_monday(now, day, topic, bool(topic) and not a.dry, fallback, missed)
         m = now.hour * 60 + now.minute
+        if day in NYSE_HOLIDAYS:
+            print(f"{day} is a US market holiday: no day trades")
+            return
         if now.weekday() < 5 and OPEN + 5 <= m <= CLOSE + 30:   # Session Momentum: signal at 9:35, sent by the 9:46 run
             sm_open = send_momentum(now, day, topic, bool(topic) and not a.dry, fallback)
         if now.weekday() < 5 and OPEN + 15 <= m <= ob.OUT + 30:   # Overnight Bias ORB (paper): 9:45 - 15:30
@@ -815,10 +819,10 @@ def _main():
             lvl += ("\nSTOP RULE: the account is 20% or more below its highest point. Don't trade; review the plan "
                     "with Claude first.")
         msgs.insert(0, (f"{day:%Y%m%d}-levels", "Day bot running", lvl, ["chart_with_upwards_trend"]))
-    if (info["open_trade"] or sm_open) and CLOSE - 15 <= m < CLOSE + 20:  # noise / sweep / Session Momentum
+    if (info["open_trade"] or sm_open) and close_of(day) - 15 <= m < close_of(day) + 20:  # noise / sweep / Session Momentum
         keep = " Not the IBS trade: that one stays open overnight." if info["ibs_keep"] else ""
         keep += " Not the Monday-dip trade: it has its own sell message." if md_open else ""
-        bell = dt.datetime.combine(day, dt.time(16, 0), NY).astimezone(AMS)
+        bell = dt.datetime.combine(day, dt.time(close_of(day) // 60, close_of(day) % 60), NY).astimezone(AMS)
         msgs.append((f"{day:%Y%m%d}-bell", f"Close everything before {bell - dt.timedelta(minutes=5):%H:%M}",
                      f"The US market closes at {bell:%H:%M} (Amsterdam). Close any noise, sweep or Session Momentum trade "
                      "that is still open now." + keep, ["bell"]))

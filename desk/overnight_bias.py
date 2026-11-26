@@ -22,6 +22,7 @@ import numpy as np
 import pandas as pd
 
 from desk.round27 import OB_TAUGHT, adx
+from desk.market_days import short_by
 from desk.ticket import ticket
 
 NY = "America/New_York"
@@ -76,12 +77,13 @@ def trades(nq5, ndx5, gap, day, now):
     if not allow or orr.sum() < ORL // 5:
         return []
     hi, lo = h[orr].max(), l[orr].min()
-    before = np.nonzero(tod < OUT)[0]
-    done_day = now >= t0 + pd.Timedelta(minutes=OUT - OPEN)
+    out_ = OUT - short_by(day)                             # 1 hour earlier on a half day
+    before = np.nonzero(tod < out_)[0]
+    done_day = now >= t0 + pd.Timedelta(minutes=out_ - OPEN)
     last = int(before[-1]) if done_day else None          # the 14:55 candle: exit at its close
     end = last if last is not None else len(g) - 1        # candles we can look at
     out, i = [], int(orr.sum())
-    while i < (last if last is not None else len(g)) and tod[i] < OUT and len(out) < MAX_N:
+    while i < (last if last is not None else len(g)) and tod[i] < out_ and len(out) < MAX_N:
         s = 1 if c[i] > hi else -1 if c[i] < lo else 0
         if s != allow or not ax[i] > ADX_MIN:
             i += 1
@@ -126,7 +128,7 @@ def messages(trades_, day, stake, off=0.0, late_min=15):
         s, e, st, tg = t["side"], t["entry"] + off, t["stop"] + off, t["target"] + off
         t_in = t["t_in"].tz_convert(AMS)
         late = (t["t_in"] + pd.Timedelta(minutes=late_min)).tz_convert(AMS)
-        out_at = (pd.Timestamp(day).tz_localize(NY) + pd.Timedelta(minutes=OUT)).tz_convert(AMS)
+        out_at = (pd.Timestamp(day).tz_localize(NY) + pd.Timedelta(minutes=OUT - short_by(day))).tz_convert(AMS)
         word = "BUY" if s == 1 else "SELL (short)"
         out.append((f"{k}_entry", f"OVERNIGHT BIAS {'BUY' if s == 1 else 'SHORT'} (paper) {t_in:%H:%M}",
                     ticket(s, stake, st, tg) +

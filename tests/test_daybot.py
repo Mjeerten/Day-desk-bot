@@ -215,3 +215,20 @@ def test_scale_now_uses_index_in_session_and_futures_outside(monkeypatch):
     assert b.scale_now(now, None) == 150.0              # ^NDX 100 + basis 50
     night = pd.Timestamp("2026-11-16 20:00", tz=ny)     # index stale -> last futures close
     assert b.scale_now(night, None) == 90.0
+
+
+def test_half_day_closes_day_trades_at_13():
+    import datetime as dt
+    from desk import bot, session_momentum as sm, overnight_bias as ob
+    from desk.market_days import close_of
+    day = dt.date(2026, 11, 27)                                   # day after Thanksgiving: NYSE closes 13:00
+    assert close_of(day) == 780 and close_of(dt.date(2026, 11, 30)) == 960
+    ix = pd.date_range("2026-11-27 09:30", "2026-11-27 12:45", freq="15min", tz="America/New_York")
+    px = np.linspace(100, 104, len(ix))                           # steady rise: noise band buys at 10:00
+    ndx = pd.DataFrame({"open": px, "high": px + 0.1, "low": px - 0.1, "close": px}, index=ix)
+    line = pd.Series(99.0, index=range(570, 960, 15))
+    ev, still_open = bot.day_events(ndx, np.nan, np.nan, line, 100.0, day)
+    kinds = [e["kind"] for e in ev]
+    assert kinds[0] == "noise_entry" and kinds[-1] == "noise_close" and not still_open
+    assert ev[-1]["ts"] == pd.Timestamp("2026-11-27 12:45", tz="America/New_York")
+    assert dt.date(2026, 11, 26) in bot.NYSE_HOLIDAYS

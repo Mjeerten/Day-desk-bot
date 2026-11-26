@@ -21,6 +21,7 @@ Pure functions so the bot, the replay and the paper log share them:
 import numpy as np
 import pandas as pd
 
+from desk.market_days import short_by
 from desk.ticket import ticket
 
 SPAN, AT, STOP, TRAIL, CLOSE = 8, 570, 0.012, 1.0, 960
@@ -56,7 +57,7 @@ def manage(nq5, dec, day, now):
     risk = e * STOP
     st, best = e - s * risk, e
     t1 = dec["t_in"]
-    eod = pd.Timestamp(day).tz_localize(NY) + pd.Timedelta(minutes=CLOSE)
+    eod = pd.Timestamp(day).tz_localize(NY) + pd.Timedelta(minutes=CLOSE - short_by(day))
     f = nq5[(nq5.index >= t1) & (nq5.index < eod) & (nq5.index + pd.Timedelta(minutes=5) <= now - LAG)]
     for ts, b in f.iterrows():
         if (b.low <= st) if s == 1 else (b.high >= st):
@@ -83,7 +84,7 @@ def messages(dec, st, day, stake, late_min=20):
     k = f"{day:%Y%m%d}-sm"
     t_in = dec["t_in"].tz_convert(AMS)
     word = "BUY" if s == 1 else "SELL (short)"
-    bell = (pd.Timestamp(day).tz_localize(NY) + pd.Timedelta(minutes=CLOSE)).tz_convert(AMS)
+    bell = (pd.Timestamp(day).tz_localize(NY) + pd.Timedelta(minutes=CLOSE - short_by(day))).tz_convert(AMS)
     late = (dec["t_in"] + pd.Timedelta(minutes=late_min)).tz_convert(AMS)
     out = [(f"{k}_entry", f"SESSION MOMENTUM {'BUY' if s == 1 else 'SHORT'} (paper) {t_in:%H:%M}",
             ticket(s, stake, e - s * risk) +
