@@ -8,6 +8,7 @@ in Claude's container) and adds to the files each time (prices.yml, daily):
   journal/prices/ndx_1m.csv      ^NDX cash index            (Yahoo)
   journal/prices/nq_1m.csv       NQ=F futures, ~10 min late (Yahoo, with pre/post market)
   journal/prices/capital_1m.csv  Capital.com demo US100 mid (the broker's own price; read only, no orders)
+  and *_15m.csv of all three (60 days: the noise band needs 14 sessions before the first test day)
 
 Columns: time (UTC, ISO), open, high, low, close. Run: python -m desk.prices [--days 29]
 """
@@ -48,8 +49,15 @@ def yahoo_1m(symbol, days, prepost=False):
     return df[~df.index.duplicated(keep="last")]
 
 
-def capital_1m(days):
-    """Capital.com demo price history (mid of bid / ask), 1000 candles per request."""
+def yahoo_15m(symbol, prepost=False):
+    from desk.bot import yahoo
+    df = yahoo(symbol, "15m", "60d", prepost=prepost)
+    df.index = df.index.tz_convert("UTC")
+    return df
+
+
+def capital_1m(days, res="MINUTE", step=1):
+    """Capital.com demo price history (mid of bid / ask), 1000 candles per request (res MINUTE / MINUTE_15, step minutes)."""
     from desk.capital import EPIC, Capital
     c = Capital()
     c.login()
@@ -57,9 +65,9 @@ def capital_1m(days):
     t = end - dt.timedelta(days=days)
     rows = []
     while t < end:
-        t2 = min(t + dt.timedelta(minutes=990), end)
+        t2 = min(t + dt.timedelta(minutes=990 * step), end)
         try:
-            r = c.req("GET", f"/prices/{EPIC}", params={"resolution": "MINUTE", "max": 1000,
+            r = c.req("GET", f"/prices/{EPIC}", params={"resolution": res, "max": 1000,
                                                         "from": t.strftime("%Y-%m-%dT%H:%M:%S"),
                                                         "to": t2.strftime("%Y-%m-%dT%H:%M:%S")})
             for p in r.json().get("prices", []):
@@ -96,9 +104,12 @@ def main():
     os.makedirs(OUT, exist_ok=True)
     for name, get in (("ndx", lambda: yahoo_1m("^NDX", a.days)),
                       ("nq", lambda: yahoo_1m("NQ=F", a.days, prepost=True)),
-                      ("capital", lambda: capital_1m(a.days))):
+                      ("capital", lambda: capital_1m(a.days)),
+                      ("ndx_15m", lambda: yahoo_15m("^NDX")),
+                      ("nq_15m", lambda: yahoo_15m("NQ=F", prepost=True)),
+                      ("capital_15m", lambda: capital_1m(59, "MINUTE_15", 15))):
         try:
-            df = merge(f"{OUT}/{name}_1m.csv", get())
+            df = merge(f"{OUT}/{name if name.endswith('15m') else name + '_1m'}.csv", get())
             print(f"{name}: {len(df)} candles, {df.index[0]:%d %b %Y} - {df.index[-1]:%d %b %Y %H:%M} UTC" if len(df)
                   else f"{name}: none")
         except Exception as err:   # noqa: one source failing must not stop the others
