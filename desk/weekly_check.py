@@ -165,7 +165,8 @@ def check(t, bot, ev, ok_set=frozenset(), since=START):
         m["week"] = [f"{(pd.Timestamp(d) - pd.Timedelta(days=pd.Timestamp(d).weekday())):%Y-%m-%d}" for d in m.date]
         rep = [e for e in ev if e["kind"] == "day" and e["broker"] == broker]
         rep_days = {f"{pd.Timestamp(e['utc'], tz='UTC').tz_convert(NY):%Y-%m-%d}" for e in rep}
-        bad = [e for e in ev if e["kind"] == "bad"]
+        labels = ("IG demo:", "Capital.com demo:", "Capital.com REAL:", "FTMO")
+        bad = [e for e in ev if e["kind"] == "bad" and (broker in e["text"] or not any(x in e["text"] for x in labels))]
         lines.append(f"=== {broker}")
         for wk, g in m.groupby("week"):
             why = []
@@ -185,6 +186,7 @@ def check(t, bot, ev, ok_set=frozenset(), since=START):
                     why.append(tag.split(" ")[0].replace("OPEN", "LEFT OPEN"))
                 rows.append(f"  {r.date} {r.strat}  broker {r.pts:+7.1f}  bot {r.pts_bot:+7.1f}  {tag}".replace("nan", "  -  "))
             done = g[g.how.notna() & (g.how != "open") & g.pts_bot.notna()]
+            done = done[[(d, broker, k) not in ok_set for d, k in zip(done.date, done.strat)]]   # explained: out of the week gap
             diff = (done.pts - done.pts_bot).sum()
             if abs(diff) > WEEK_GAP:
                 why.append(f"week gap {diff:+.0f}")
@@ -195,7 +197,7 @@ def check(t, bot, ev, ok_set=frozenset(), since=START):
             wbad = [e for e in bad if wk <= f"{pd.Timestamp(e['utc'], tz='UTC').tz_convert(NY):%Y-%m-%d}" <
                     f"{pd.Timestamp(wk) + pd.Timedelta(days=7):%Y-%m-%d}"]
             if wbad:
-                why.append(f"{len(wbad)} problem lines (all brokers)")
+                why.append(f"{len(wbad)} problem lines")
             verdict = "CLEAN" if not why else "NOT CLEAN: " + "; ".join(dict.fromkeys(why))
             lines.append(f"week of {wk}: broker {g.pts.sum():+.0f} pts, bot {g.pts_bot.sum():+.0f} pts, "
                          f"difference {diff:+.0f} -> {verdict}")
