@@ -9,7 +9,7 @@ Each bot run reports, per strategy it evaluated, the trades that should be open 
   - one of our positions whose trade is no longer wanted (the bot's exit / 16:00 / IBS sell / 24 h ...) -> close it;
   - Session Momentum's trailing stop -> move the stop on IG when it moved.
 Prices: the bot's levels are on the index (N, S, I) or futures (M, P) scale; IG's US Tech 100 Cash differs from both, so
-each level is moved by (IG price now - that scale's price now). Size: the plan's stake (desk/plan.py) / price, in
+each level is moved by the broker's steady offset to the index (median of its last 150 samples) + (index - that scale) (round 50). Size: the plan's stake (desk/plan.py) / price, in
 EUR 1 contracts (EUR 1 per point), rounded to IG's minimum step.
 Safety: AUTO_TRADE (GitHub variable) off | dry (default: logs what it would do, sends nothing) | demo; the client only
 knows IG's demo gateway; never a second position for the same trade; at most MAX_OPEN positions and MAX_STAKE_X x the
@@ -30,6 +30,7 @@ import math
 import os
 import time
 
+import numpy as np
 import pandas as pd
 import requests
 
@@ -103,6 +104,8 @@ def client(B, mod):
     return getattr(mod, B["cls"])(**B.get("init", {}))
 
 _wants: dict[str, tuple[list[dict], float | None]] = {}
+_index = None                         # (cash index price, its time) of this run, when fresh (bot.main, in the session)
+OFF_N = 150                           # samples of (broker - index) kept per broker (~2 sessions with the fast runner)
 enabled = False                       # bot.main sets it for live runs
 
 
@@ -125,6 +128,33 @@ def safe(B, mod, cl, m):
             raise RuntimeError("real-money broker not set up as live: refusing to trade")
     elif B["demo_host"] not in mod.BASE or getattr(cl, "live", False):
         raise RuntimeError("not the demo server: refusing to trade")
+
+
+def index_now(px, ts=None):
+    """The bot's fresh ^NDX price this run (None outside the session or when Yahoo is late)."""
+    global _index
+    _index = (float(px), ts) if px is not None and np.isfinite(px) else None
+
+
+def steady_shift(st, mid, scale_px):
+    """How far to move the bot's levels to the broker's price (round 50, 26 Nov 2026).
+    The old way, broker price now - the index's last 1-minute close, mixes two moments: on 25 Nov at 10:01 the index
+    close was a minute old in a 60-point move, so every level moved 58 points too high and the sweep's stop was hit by
+    0.4 points (-345 instead of +642). The brokers' US Tech 100 follows the cash index (Capital.com median -1.1 to +0.5
+    points a day, 21 days), so: the median of this broker's last OFF_N samples of (broker - index), plus the exact
+    (index - this strategy's scale) of this run (0 for N/S/I/O; minus the basis for Session Momentum's futures scale).
+    Without a fresh index price (outside the session) it stays the old way."""
+    if not scale_px:
+        return None
+    if _index is None:
+        return mid - scale_px
+    idx = _index[0]
+    sam = st.setdefault("offsets", [])
+    if not st.get("_sampled"):
+        sam.append(round(mid - idx, 2))
+        del sam[:-OFF_N]
+        st["_sampled"] = True
+    return float(np.median(sam)) + (idx - scale_px)
 
 
 def want(strat, wants, scale_px=None):
@@ -151,6 +181,7 @@ def save(st, m, broker="ig"):
     os.makedirs(os.path.dirname(path) or ".", exist_ok=True)
     cut = f"{dt.date.today() - dt.timedelta(days=30):%y%m%d}"
     st["trades"] = {k: v for k, v in st["trades"].items() if v.get("status") == "open" or v.get("day", "999999") >= cut}
+    st.pop("_sampled", None)       # one (broker - index) sample per run, not per strategy
     with open(path, "w", encoding="utf-8") as f:
         json.dump(st, f, indent=1, default=str)
 
@@ -213,6 +244,7 @@ def flush(stake, now=None):
                        quiet=(broker != "ig" and m == "dry"))   # a Capital.com / FTMO dry run never buzzes the phone
     finally:
         _wants.clear()
+        index_now(None)
 
 
 def _flush(m, stake, now, broker="ig"):
@@ -311,7 +343,7 @@ def _flush(m, stake, now, broker="ig"):
         return True
 
     for strat, (wants, scale_px) in _wants.items():
-        shift = (mid - scale_px) if scale_px else None
+        shift = steady_shift(st, mid, scale_px)
         wanted = {w["ref"]: w for w in wants}
         # close what the bot says is over
         for ref, t in st["trades"].items():

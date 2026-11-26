@@ -181,3 +181,39 @@ def test_wrong_side_of_market_retries_once_at_fresh_price(ig, monkeypatch):
     at.flush(1000, t("10:01", "2026-11-06"))
     assert len(seen) == 2 and ig.calls[0][0] == "open"
     assert at.load("demo")["trades"]["N2611061000"]["status"] == "open"
+
+
+def test_steady_shift_uses_the_median_not_one_snapshot():
+    """25 Nov 2026: broker 25,393 vs a minute-old index close 25,326 moved every level 67 points; the median of the
+    broker's recent (broker - index) samples keeps the shift at the real ~3 points (round 50)."""
+    from desk import autotrade as at
+    st = {"offsets": [2.0, -1.0, 4.0, 3.0, 1.0] * 10}
+    at.index_now(25326.0)
+    try:
+        sh = at.steady_shift(st, 25393.0, 25326.0)          # index-scale strategy (N / S / I / O)
+        assert abs(sh - 2.0) < 1e-9
+        assert len(st["offsets"]) == 51 and st["offsets"][-1] == 67.0   # this run's sample is kept, once
+        at.steady_shift(st, 25393.0, 25326.0)
+        assert len(st["offsets"]) == 51
+        # futures-scale strategy (Session Momentum): scale = index + basis 59 -> shift = median - 59
+        assert abs(at.steady_shift(st, 25393.0, 25385.0) - (2.0 - 59.0)) < 1e-9
+    finally:
+        at.index_now(None)
+
+
+def test_steady_shift_without_fresh_index_stays_the_old_way():
+    from desk import autotrade as at
+    at.index_now(None)
+    assert at.steady_shift({}, 25393.0, 25326.0) == 67.0
+    assert at.steady_shift({}, 25393.0, None) is None
+
+
+def test_steady_shift_keeps_only_the_last_samples():
+    from desk import autotrade as at
+    st = {"offsets": list(range(200))}
+    at.index_now(100.0)
+    try:
+        at.steady_shift(st, 105.0, 100.0)
+        assert len(st["offsets"]) == at.OFF_N and st["offsets"][-1] == 5.0
+    finally:
+        at.index_now(None)

@@ -469,6 +469,7 @@ def build(now, day, data=None, missed=()):
     ndx1 = complete(d["ndx1"], 1, now)
     info = dict(onh=onh, onl=onl, basis=gap, open=o, prev_close=pc, line=line, open_trade=open_,
                 ibs_raw=ibs_events(ndx15, day), idx_px=float(ndx1.close.iloc[-1]) if len(ndx1) else None,
+                idx_t=str(ndx1.index[-1] + pd.Timedelta(minutes=1)) if len(ndx1) else None,
                 ibs_held=held, ibs_keep=any(e["kind"] in ("ibs_entry", "ibs_hold") for e in iev),
                 last_candle=str(ndx15.index[-1]) if len(ndx15) else None, fx=d["fx"])
     return ev, info
@@ -481,6 +482,7 @@ def scale_now(now, day):
     nq5, ndx5, nq1, ndx1, gap = five_minute(now, day)
     ndx = complete(ndx1, 1, now)
     if len(ndx) and np.isfinite(gap) and pd.Timestamp(now) - ndx.index[-1] <= pd.Timedelta(minutes=5):
+        at.index_now(float(ndx.close.iloc[-1]))   # for the brokers' steady level shift (autotrade.steady_shift)
         return float(ndx.close.iloc[-1]) + gap
     nqc = complete(nq1, 1, now)
     return float(nqc.close.iloc[-1]) if len(nqc) else None
@@ -643,6 +645,8 @@ def send_obias(now, day, topic="", live=False, fallback=1000.0):
         nq5, ndx5, nq1, ndx1, gap = five_minute(now, day)
         tr = ob.trades(nq5, ndx5, gap, day, now)
         ndc = complete(ndx1, 1, now)
+        if len(ndc) and pd.Timestamp(now) - ndc.index[-1] <= pd.Timedelta(minutes=5):
+            at.index_now(float(ndc.close.iloc[-1]))
         at.want("O", [dict(ref=at.ref_of("O", t["t_in"]), side=t["side"], entry=t["entry"], t_in=t["t_in"],
                            stop=t["stop"], target=t["target"]) for t in tr if t["why"] == "open"],
                 float(ndc.close.iloc[-1]) if len(ndc) else None)
@@ -792,6 +796,9 @@ def _main():
         sys.exit("no futures gap measured today: set T212_OFFSET to a number")
     msgs = [message(e, off, info["fx"], stake) for e in ev]
     wn, ws, wi = wants(ev, info["ibs_raw"], day)
+    # fresh index price for the brokers' level shift (autotrade.steady_shift): the last 1-minute close, at most 3 min old
+    fresh = info["idx_t"] is not None and now - pd.Timestamp(info["idx_t"]) <= pd.Timedelta(minutes=3)
+    at.index_now(info["idx_px"] if fresh else None)
     at.want("N", wn, info["idx_px"])
     at.want("S", ws, info["idx_px"])
     at.want("I", wi, info["idx_px"])
