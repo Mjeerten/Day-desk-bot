@@ -1,0 +1,94 @@
+name: fast runner
+
+# PUBLIC repo (free minutes). Code comes from the private repo (tools/publish_bot.sh): edit it there.
+# The bot within ~15-30 s of each candle close instead of ~2 min (desk/fast.py; round 17: 2 min costs the noise band and
+# the sweep ~2 %/yr each). Started by daybot.yml on a session morning (variable FAST_RUNNER = off stops that); while it
+# runs, daybot.yml skips its own bot run. Parts of one hour each, one after the other, each on a new GitHub server;
+# the sent-message list moves on through the cache (each part restores the newest and saves its own).
+on:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: fast
+  cancel-in-progress: false
+
+jobs:
+  part:
+    strategy:
+      max-parallel: 1
+      fail-fast: false
+      matrix:
+        part: [1, 2, 3, 4, 5, 6, 7, 8]
+    runs-on: ubuntu-latest
+    timeout-minutes: 80
+    steps:
+      - uses: actions/checkout@v5
+      - name: private journal (plan, account, IBS missed dates) from Mjeerten/day-trading-desk
+        uses: actions/checkout@v5
+        with:
+          repository: Mjeerten/day-trading-desk
+          token: ${{ secrets.DESK_DATA_TOKEN }}
+          path: private
+          sparse-checkout: journal
+      - run: ln -s private/journal journal
+      - uses: actions/setup-python@v6
+        with:
+          python-version: "3.12"
+      - run: pip install --quiet pandas numpy requests websocket-client
+      - name: restore sent-message list
+        uses: actions/cache/restore@v4
+        with:
+          path: .daybot
+          key: daybot-${{ github.run_id }}-fast-${{ matrix.part }}
+          restore-keys: daybot-
+      - name: fast loop (one hour)
+        timeout-minutes: 70
+        env:
+          NTFY_TOPIC: ${{ secrets.NTFY_TOPIC }}
+          T212_OFFSET: ${{ vars.T212_OFFSET }}
+          # manual-trading messages: variable PHONE_ALERTS = on | off (default off since 8 Nov 2026: only IG demo messages)
+          PHONE_ALERTS: ${{ vars.PHONE_ALERTS || 'off' }}
+          STAKE_EUR: ${{ vars.STAKE_EUR }}
+          # automatic orders on the IG DEMO (desk/autotrade.py): variable AUTO_TRADE = dry (default) | demo | off
+          AUTO_TRADE: ${{ vars.AUTO_TRADE }}
+          IG_API_KEY: ${{ secrets.IG_API_KEY }}
+          IG_USERNAME: ${{ secrets.IG_USERNAME }}
+          IG_PASSWORD: ${{ secrets.IG_PASSWORD }}
+          IG_ACCOUNT_ID: ${{ secrets.IG_ACCOUNT_ID }}
+          # same orders on the Capital.com DEMO (desk/capital.py): variable CAPITAL_TRADE = dry (default) | demo | off
+          CAPITAL_TRADE: ${{ vars.CAPITAL_TRADE }}
+          CAPITAL_EPIC: ${{ vars.CAPITAL_EPIC }}
+          CAPITAL_API_KEY: ${{ secrets.CAPITAL_API_KEY }}
+          CAPITAL_IDENTIFIER: ${{ secrets.CAPITAL_IDENTIFIER }}
+          CAPITAL_PASSWORD: ${{ secrets.CAPITAL_PASSWORD }}
+          CAPITAL_ACCOUNT_ID: ${{ secrets.CAPITAL_ACCOUNT_ID }}
+          # REAL MONEY on Capital.com (off until Maarten's go): orders only with variable CAPITAL_LIVE_TRADE = live AND
+          # variable CAPITAL_LIVE_GO = yes; size CAPITAL_LIVE_SIZE (1.0, later 1.5) x the month's first balance
+          CAPITAL_LIVE_TRADE: ${{ vars.CAPITAL_LIVE_TRADE }}
+          CAPITAL_LIVE_GO: ${{ vars.CAPITAL_LIVE_GO }}
+          CAPITAL_LIVE_SIZE: ${{ vars.CAPITAL_LIVE_SIZE }}
+          CAPITAL_LIVE_API_KEY: ${{ secrets.CAPITAL_LIVE_API_KEY }}
+          CAPITAL_LIVE_IDENTIFIER: ${{ secrets.CAPITAL_LIVE_IDENTIFIER }}
+          CAPITAL_LIVE_PASSWORD: ${{ secrets.CAPITAL_LIVE_PASSWORD }}
+          CAPITAL_LIVE_ACCOUNT_ID: ${{ secrets.CAPITAL_LIVE_ACCOUNT_ID }}
+          # same orders on the FTMO account via cTrader (desk/ctrader.py): variable CTRADER_TRADE = dry (default) | demo | off
+          CTRADER_TRADE: ${{ vars.CTRADER_TRADE }}
+          CTRADER_SIZE: ${{ vars.CTRADER_SIZE }}
+          # several FTMO accounts at once (paid challenges): 'account=name:size:target%, ...' (autotrade.ftmo_accounts)
+          CTRADER_ACCOUNTS: ${{ vars.CTRADER_ACCOUNTS }}
+          CTRADER_ACCOUNT: ${{ vars.CTRADER_ACCOUNT }}
+          CTRADER_TARGET: ${{ vars.CTRADER_TARGET }}
+          CTRADER_CLIENT_ID: ${{ secrets.CTRADER_CLIENT_ID }}
+          CTRADER_CLIENT_SECRET: ${{ secrets.CTRADER_CLIENT_SECRET }}
+          CTRADER_ACCESS_TOKEN: ${{ secrets.CTRADER_ACCESS_TOKEN }}
+          CTRADER_REFRESH_TOKEN: ${{ secrets.CTRADER_REFRESH_TOKEN }}
+        run: python -m desk.fast
+      - name: save sent-message list
+        if: always() && hashFiles('.daybot/sent.json') != ''
+        uses: actions/cache/save@v4
+        with:
+          path: .daybot
+          key: daybot-${{ github.run_id }}-fast-${{ matrix.part }}

@@ -25,6 +25,7 @@ on:
 
 permissions:
   contents: read
+  actions: write   # start the fast runner (fast.yml) and see whether it runs
 
 concurrency:
   group: daybot
@@ -50,7 +51,26 @@ jobs:
         with:
           python-version: "3.12"
       - run: pip install --quiet pandas numpy requests websocket-client
+      # Fast runner (desk/fast.py, fast.yml): in the session the bot runs ~15-30 s after each candle close from one long
+      # job. This run starts it if it belongs to now, and skips its own bot run while it runs (never both at once).
+      # Variable FAST_RUNNER = off: never start it.
+      - name: fast runner
+        id: fast
+        if: ${{ !inputs.test }}
+        env:
+          GH_TOKEN: ${{ github.token }}
+          FAST_RUNNER: ${{ vars.FAST_RUNNER }}
+        run: |
+          if [ "${FAST_RUNNER:-on}" = off ]; then echo "FAST_RUNNER is off"; exit 0; fi
+          active=$(gh run list -R "$GITHUB_REPOSITORY" --workflow fast.yml --limit 10 --json status \
+                   --jq '[.[] | select(.status != "completed")] | length') || active=0
+          if [ "${active:-0}" != 0 ]; then
+            echo "the fast runner is running: it does this run's work"; echo "skip=true" >> "$GITHUB_OUTPUT"
+          elif [ "$(python -m desk.fast --should-start)" = yes ] && gh workflow run fast.yml -R "$GITHUB_REPOSITORY" --ref main; then
+            echo "fast runner started: it does this run's work"; echo "skip=true" >> "$GITHUB_OUTPUT"
+          fi
       - name: restore sent-message list
+        if: steps.fast.outputs.skip != 'true'
         uses: actions/cache/restore@v4
         with:
           path: .daybot
@@ -58,6 +78,7 @@ jobs:
           restore-keys: daybot-
       - name: bot
         id: bot
+        if: steps.fast.outputs.skip != 'true'
         env:
           NTFY_TOPIC: ${{ secrets.NTFY_TOPIC }}
           T212_OFFSET: ${{ vars.T212_OFFSET }}
@@ -99,7 +120,7 @@ jobs:
           CTRADER_REFRESH_TOKEN: ${{ secrets.CTRADER_REFRESH_TOKEN }}
         run: python -m desk.bot ${{ inputs.test && '--test' || '' }}
       - name: save sent-message list
-        if: always() && hashFiles('.daybot/sent.json') != ''
+        if: always() && steps.fast.outputs.skip != 'true' && hashFiles('.daybot/sent.json') != ''
         uses: actions/cache/save@v4
         with:
           path: .daybot
