@@ -44,10 +44,20 @@ jobs:
         env:
           GH_TOKEN: ${{ github.token }}
         run: python -m desk.weekly_check --fetch
+      - name: 1-minute prices (cash index, futures, Capital.com's US100) for the broker-price stop backtest (desk/prices.py)
+        continue-on-error: true
+        env:
+          CAPITAL_EPIC: ${{ vars.CAPITAL_EPIC }}
+          CAPITAL_API_KEY: ${{ secrets.CAPITAL_API_KEY }}
+          CAPITAL_IDENTIFIER: ${{ secrets.CAPITAL_IDENTIFIER }}
+          CAPITAL_PASSWORD: ${{ secrets.CAPITAL_PASSWORD }}
+          CAPITAL_ACCOUNT_ID: ${{ secrets.CAPITAL_ACCOUNT_ID }}
+        run: python -m desk.prices
       - name: commit the paper logs to the private repo
         working-directory: private
         run: |
           git config user.name "github-actions[bot]"
           git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
           git add journal/paper_flux.csv journal/paper_monday.csv journal/paper_momentum.csv journal/paper_obias.csv journal/paper_desk.csv journal/demo_trades.csv journal/demo_events.json journal/demo_check.txt
+          git add journal/prices || true
           git commit -m "Paper flux: update after the US close" && git pull --rebase -q && git push || echo "nothing to commit"
